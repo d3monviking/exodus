@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Exodus — cab-cluster coordinator (local, Build It track)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 15
+    MemorySize: 256
+    CodeUri: ./
+    Environment:
+      Variables:
+        EXODUS_REPO: dynamo
+        AWS_ENDPOINT_URL: http://localstack:4566
+        REQUESTS_TABLE: Requests
+        GROUPS_TABLE: Groups
+        BLOCKS_TABLE: Blocks
+        RELEASES_TABLE: Releases
+        RELEASE_LOG_BUCKET: exodus-release-log
+
+Resources:
+  SubmitRequestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.submit_request.handler
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /requests
+            Method: post
+
+  GetMyRequestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.get_my_request.handler
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /requests/me
+            Method: get
+
+  GetBoardFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.get_board.handler
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /board
+            Method: get
+
+  RespondFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.respond.handler
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /groups/{id}/respond
+            Method: post
+
+  ReleaseOrchestratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.release_orchestrator.handler
+      Events:
+        # Deployed-AWS shape (portability). Locally, EventBridge->Lambda
+        # invocation isn't wired between LocalStack and `sam local start-api`,
+        # so this is exercised via the /internal/release fallback route below
+        # and, when confirmed working, LocalStack's own scheduler.
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(10 minutes)
+            Enabled: false
+        Api:
+          Type: Api
+          Properties:
+            Path: /internal/release
+            Method: post
+
+  LifecycleSweepFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.lifecycle_sweep.handler
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Enabled: false
+        Api:
+          Type: Api
+          Properties:
+            Path: /internal/sweep
+            Method: post
+
+Outputs:
+  ApiUrl:
+    Description: Local API Gateway base URL (informational; sam local prints the real one)
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"

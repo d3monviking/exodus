@@ -1,0 +1,9 @@
+arch/
+.git/
+.venv/
+.data/
+.aws-sam/
+.localstack/
+__pycache__/
+*.pyc
+web/
