@@ -1,0 +1,6 @@
+arch/
+__pycache__/
+*.pyc
+.data/
+.env
+.aws-sam/
