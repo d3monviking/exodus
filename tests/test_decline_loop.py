@@ -199,7 +199,9 @@ def test_timeouts_count_toward_the_budget(repo, grouped):
 def test_proposal_exposes_handles_not_identities_until_confirmed(repo, grouped):
     ev = {"headers": {"X-Student-Email": EMAIL["s1"]}}
     p = json.loads(get_my_request.handler(ev, None)["body"])["proposal"]
-    assert p["others"] == ["1", "2"] and p["contacts"] is None
+    assert p["others"] == ["1", "2"] and p["contacts"] is None and p["accepted"] == 0
+    call("s2", grouped, {"action": "accept"})
+    assert json.loads(get_my_request.handler(ev, None)["body"])["proposal"]["accepted"] == 1
     assert "s2" not in json.dumps(p) and "s3" not in json.dumps(p)
 
     for sid in ("s1", "s2", "s3"):

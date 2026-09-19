@@ -9,13 +9,13 @@
   :root {
     --bg: #f6f7f9; --card: #ffffff; --ink: #1b1f24; --muted: #5d6673;
     --line: #dde1e7; --accent: #1f5eff; --accent-ink: #ffffff;
-    --ok: #12703a; --warn: #9a5b00; --bad: #b3261e;
+    --ok: #12703a; --ok-bg: #e6f4ec; --warn: #8a5300; --warn-bg: #fdf1dc; --bad: #b3261e;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #12151a; --card: #1b2028; --ink: #e8ebf0; --muted: #9aa4b2;
       --line: #2c3440; --accent: #6b93ff; --accent-ink: #0d1117;
-      --ok: #59c98a; --warn: #e5a94b; --bad: #ff8a80;
+      --ok: #59c98a; --ok-bg: #16281f; --warn: #e5a94b; --warn-bg: #2b2313; --bad: #ff8a80;
     }
   }
   * { box-sizing: border-box; }
@@ -23,7 +23,8 @@
          font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
   main { max-width: 560px; margin: 0 auto; padding: 24px 16px 64px; }
   h1 { font-size: 1.6rem; margin: 0 0 4px; }
-  .tag { color: var(--muted); margin: 0 0 24px; }
+  .tag { color: var(--muted); margin: 0 0 16px; }
+  .who { color: var(--muted); font-size: .85rem; margin: 0 0 16px; }
   .card { background: var(--card); border: 1px solid var(--line);
           border-radius: 12px; padding: 20px; margin-bottom: 16px; }
   .card h2 { font-size: 1rem; margin: 0 0 12px; }
@@ -33,26 +34,46 @@
   .row { display: flex; gap: 12px; } .row > * { flex: 1; }
   button { font: inherit; padding: 11px 16px; border: 0; border-radius: 8px; cursor: pointer;
            background: var(--accent); color: var(--accent-ink); font-weight: 600; }
-  button.secondary { background: transparent; color: var(--muted); border: 1px solid var(--line); font-weight: 400; }
+  button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); font-weight: 400; }
+  button.link { background: none; color: var(--accent); padding: 0; font-weight: 400; text-decoration: underline; }
   button:disabled { opacity: .5; cursor: not-allowed; }
-  .actions { display: flex; gap: 8px; margin-top: 16px; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
   .window { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--bg);
             color: var(--muted); font-size: .9rem; }
   .msg { margin-top: 12px; font-size: .9rem; min-height: 1.3em; }
   .msg.err { color: var(--bad); } .msg.ok { color: var(--ok); }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
   dt { color: var(--muted); } dd { margin: 0; }
-  .pill { display: inline-block; padding: 1px 10px; border-radius: 99px; font-size: .8rem;
-          border: 1px solid var(--line); }
+  .pill { display: inline-block; padding: 1px 10px; border-radius: 99px; font-size: .8rem; border: 1px solid var(--line); }
+  .notice { border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; font-size: .95rem;
+            background: var(--card); border: 1px solid var(--line); }
+  .notice.ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+  .notice.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+  .proposal { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .proposal h2 { margin-top: 0; }
+  .deadline { color: var(--muted); font-size: .9rem; margin-top: 10px; }
+  .picker { display: grid; gap: 8px; margin-top: 16px; }
+  .picker .opt { text-align: left; display: block; width: 100%; }
+  .picker .opt small { display: block; font-weight: 400; color: var(--muted); }
+  .picker p { margin: 0; color: var(--muted); font-size: .9rem; }
+  .board-line { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
+  .board-line span:first-child { color: var(--muted); }
+  #countdown { font-variant-numeric: tabular-nums; font-weight: 600; }
+  @keyframes flash { from { background: var(--ok-bg); } to { background: var(--card); } }
+  .flash { animation: flash 1.6s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .flash { animation: none; } }
   @media (max-width: 480px) { .row.stack { flex-direction: column; gap: 0; } }
-  .hidden { display: none; }
-  .board { color: var(--muted); font-size: .9rem; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
 <main>
   <h1>Exodus</h1>
   <p class="tag">End-of-semester cab clustering. Tell us when you want to leave and how flexible you are.</p>
+  <p class="who hidden" id="who-line">Signed in as <strong id="who"></strong> &middot; <button class="link" id="signout" type="button">Sign out</button></p>
+
+  <div class="notice hidden" id="notice" role="status" aria-live="polite"></div>
 
   <section class="card" id="signin">
     <h2>Sign in</h2>
@@ -62,8 +83,14 @@
     <div class="msg" id="signin-msg" role="status"></div>
   </section>
 
+  <section class="card hidden" id="status-card">
+    <h2>Your request</h2>
+    <dl id="status"></dl>
+    <div id="proposal"></div>
+  </section>
+
   <section class="card hidden" id="form-card">
-    <h2>Your trip</h2>
+    <h2 id="form-title">Your trip</h2>
     <div class="row stack">
       <div><label for="src">From</label><select id="src"></select></div>
       <div><label for="dst">To</label><select id="dst"></select></div>
@@ -78,20 +105,16 @@
       <div><label for="late">Can leave later by</label><select id="late"></select></div>
     </div>
     <div class="window" id="window"></div>
-    <div class="actions">
-      <button id="submit" type="button">Join the pool</button>
-      <button id="signout" type="button" class="secondary">Sign out</button>
-    </div>
+    <div class="actions"><button id="submit" type="button">Join the pool</button></div>
     <div class="msg" id="submit-msg" role="status" aria-live="polite"></div>
   </section>
 
-  <section class="card hidden" id="status-card">
-    <h2>Your request</h2>
-    <dl id="status"></dl>
-    <div id="proposal"></div>
+  <section class="card hidden" id="board-card">
+    <h2>Release board</h2>
+    <div class="board-line"><span>Next release</span><span id="countdown">&ndash;</span></div>
+    <div class="board-line"><span id="pool-label">Waiting to be grouped</span><span id="pool">&ndash;</span></div>
+    <div class="board-line"><span>Last release</span><span id="last" style="text-align:right"></span></div>
   </section>
-
-  <p class="board" id="board"></p>
 </main>
 
 <script>
@@ -103,6 +126,17 @@ const API = new URLSearchParams(location.search).get("api") || "http://127.0.0.1
 // Mirrors ROUTES in config.py -- keep in sync.
 const LOCATIONS = { COLLEGE: "College", AIRPORT: "Kempegowda International Airport", STATION: "City railway station" };
 const DESTINATIONS = { COLLEGE: ["AIRPORT", "STATION"], AIRPORT: ["COLLEGE"], STATION: ["COLLEGE"] };
+const MAX_FLEX = 240;
+
+// The value is the REASONS enum string, byte for byte; only the label is friendly.
+// A mismatch here fails silently (the server sees an unknown reason and 400s),
+// so the strings are not derived or reformatted anywhere.
+const DECLINE_REASONS = [
+  { reason: "PERSON", label: "Not with one of these people", hint: "You won't be grouped with them again." },
+  { reason: "TIME", label: "The time doesn't work for me", hint: "You can widen your window to make a match likelier." },
+  { reason: "TOO_FEW", label: "I only want a full cab of three", hint: "We won't offer you a pair." },
+  { reason: "PLANS_CHANGED", label: "My plans changed", hint: "This removes your request." },
+];
 
 // ---- time boundary: the ONLY place clock time <-> integer minutes converts ----
 const toMinutes = (hour, minute) => hour * 60 + minute;
@@ -114,12 +148,31 @@ const fromMinutes = (m) => {
 // ------------------------------------------------------------------------------
 
 const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) n.setAttribute(k, v === true ? "" : v);
+  }
+  n.append(...kids.flat().filter((x) => x != null));
+  return n;
+};
 const store = {
   get() { try { return localStorage.getItem("exodus.email"); } catch { return null; } },
   set(v) { try { localStorage.setItem("exodus.email", v); } catch {} },
   clear() { try { localStorage.removeItem("exodus.email"); } catch {} },
 };
-let email = null, pollTimer = null, boardOffset = 0, nextReleaseAt = null;
+
+let email = null, pollTimer = null, noticeTimer = null;
+let clockOffset = 0;               // server time minus local time, seconds
+let data = null;                   // last { request, proposal }
+let board = null;                  // last /board
+let lastKey = null;                // skip re-rendering unchanged data, or polling would wipe an open picker
+let flow = { step: null };         // the decline picker: null | reason | person | time | plans
+let suppressDissolveNotice = false;
+
+// ---------------------------------------------------------------- helpers
 
 function fill(select, options, selected) {
   select.replaceChildren(...options.map(([value, label]) => {
@@ -129,6 +182,32 @@ function fill(select, options, selected) {
     return o;
   }));
 }
+
+async function api(path, options = {}) {
+  const res = await fetch(API + path, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(email ? { "X-Student-Email": email } : {}) },
+  });
+  let body = null;
+  try { body = await res.json(); } catch {}
+  return { ok: res.ok, status: res.status, body };
+}
+
+function say(id, text, kind) { const e = $(id); e.textContent = text; e.className = "msg" + (kind ? " " + kind : ""); }
+
+function notify(text, kind = "", flash = false) {
+  const n = $("notice");
+  n.textContent = text; n.className = "notice" + (kind ? " " + kind : "");
+  if (flash) { void n.offsetWidth; n.classList.add("flash"); }
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => n.classList.add("hidden"), 20000);
+}
+
+const nowServer = () => Math.floor(Date.now() / 1000) + clockOffset;
+const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+const routeParts = (route) => route.split("_");
+
+// -------------------------------------------------------------------- form
 
 function buildForm() {
   fill($("src"), Object.entries(LOCATIONS).filter(([k]) => k in DESTINATIONS), "COLLEGE");
@@ -161,91 +240,275 @@ function updateWindow() {
     `You'd accept any time from ${fromMinutes(p - b + 1440)} to ${fromMinutes(p + a)}, ideally ${fromMinutes(p)}.`;
 }
 
-async function api(path, options = {}) {
-  const res = await fetch(API + path, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(email ? { "X-Student-Email": email } : {}) },
-  });
-  let body = null;
-  try { body = await res.json(); } catch {}
-  return { ok: res.ok, status: res.status, body };
-}
-
-function say(id, text, kind) {
-  const el = $(id); el.textContent = text; el.className = "msg" + (kind ? " " + kind : "");
-}
-
 async function submit() {
   $("submit").disabled = true;
   say("submit-msg", "");
   try {
     const { ok, body } = await api("/requests", { method: "POST", body: JSON.stringify(currentValues()) });
-    if (ok) { say("submit-msg", "You're in the pool. You'll be grouped at the next release.", "ok"); poll(); }
+    if (ok) { say("submit-msg", "You're in the pool. You'll be grouped at the next release.", "ok"); lastKey = null; poll(); }
     else say("submit-msg", (body && body.error) || "Something went wrong.", "err");
   } catch { say("submit-msg", "Can't reach the server. Is the API running?", "err"); }
   $("submit").disabled = false;
 }
 
+// ------------------------------------------------------------- status card
+
 function row(dl, term, value) {
-  const dt = document.createElement("dt"), dd = document.createElement("dd");
-  dt.textContent = term; dd.append(value);
-  dl.append(dt, dd);
+  dl.append(el("dt", {}, term), el("dd", {}, value));
 }
 
-function render(data) {
-  const card = $("status-card");
-  if (!data.request) { card.classList.add("hidden"); return; }
-  card.classList.remove("hidden");
-  const r = data.request, dl = $("status");
-  dl.replaceChildren();
-  const [src, dst] = r.route.split("_");
-  row(dl, "Route", `${LOCATIONS[src]} → ${LOCATIONS[dst]}`);
-  row(dl, "Preferred", `${fromMinutes(r.p)} (${r.b} min earlier / ${r.a} min later)`);
-  const pill = document.createElement("span"); pill.className = "pill"; pill.textContent = r.status;
-  row(dl, "Status", pill);
+function render(next) {
+  const key = JSON.stringify(next);
+  if (key === lastKey) return;
+  lastKey = key;
 
-  const box = $("proposal"); box.replaceChildren();
+  const prev = data;
+  if (prev) detectTransitions(prev, next);
+  suppressDissolveNotice = false;
+  data = next;
+
+  const r = next.request, p = next.proposal;
+  const editable = !r || r.status === "PENDING";
+  $("form-card").classList.toggle("hidden", !editable);
+  $("form-title").textContent = r ? "Change your trip" : "Your trip";
+  $("submit").textContent = r ? "Update my request" : "Join the pool";
+  $("status-card").classList.toggle("hidden", !r);
+  if (!p || p.state !== "FORMED") flow = { step: null };
+
+  const dl = $("status");
+  dl.replaceChildren();
+  if (r) {
+    const [src, dst] = routeParts(r.route);
+    row(dl, "Route", `${LOCATIONS[src]} → ${LOCATIONS[dst]}`);
+    row(dl, "Preferred", `${fromMinutes(r.p)} (${r.b} min earlier / ${r.a} min later)`);
+    row(dl, "Status", el("span", { class: "pill" }, r.status));
+    if (r.status === "SAT_OUT")
+      row(dl, "", "Sitting this release out after repeated declines. You'll rejoin automatically at the next one.");
+  }
+  renderProposal();
+  renderBoard();
+}
+
+function detectTransitions(prev, next) {
+  const had = prev.proposal && prev.proposal.state === "FORMED";
+  const has = next.proposal && next.proposal.state === "FORMED";
+  if (has && (!had || prev.proposal.group_id !== next.proposal.group_id)) {
+    notify("You've been grouped. Review the proposal and respond before the deadline.", "ok", true);
+  } else if (had && !next.proposal && next.request && next.request.status === "PENDING" && !suppressDissolveNotice) {
+    notify("Your group was dissolved: someone declined or the deadline passed. You're back in the pool for the next release.", "warn");
+  }
+  const status = (d) => d.request && d.request.status;
+  if (status(next) === "CONFIRMED" && status(prev) !== "CONFIRMED") notify("Your cab is confirmed.", "ok", true);
+  if (status(next) === "SAT_OUT" && status(prev) !== "SAT_OUT")
+    notify("You're sitting this release out after repeated declines. You'll rejoin automatically.", "warn");
+}
+
+function renderProposal() {
+  const box = $("proposal");
+  box.replaceChildren();
+  const p = data && data.proposal;
+  if (!p) return;
+
+  const confirmed = p.state === "CONFIRMED";
+  const dl = el("dl");
+  row(dl, "Departs", fromMinutes(p.departure_time));
+  row(dl, "Group size", String(p.size));
+  if (p.explanation) row(dl, "Why", p.explanation);
+  if (p.contacts) row(dl, "Travelling with", p.contacts.join(", "));
+  box.append(el("div", { class: "proposal" }, el("h2", {}, confirmed ? "Your cab is confirmed" : "Proposed group"), dl));
+  if (confirmed) return;
+
+  const wrap = box.firstChild;
+  wrap.append(el("div", { class: "deadline", id: "deadline", "data-at": p.accept_deadline }));
+  wrap.append(el("div", { id: "actions" }), el("div", { class: "msg", id: "action-msg", role: "alert" }));
+  renderActions(p);
+  tickDeadline();
+}
+
+// ----------------------------------------------------- accept / decline flow
+
+function renderActions(p) {
+  const box = $("actions");
+  box.replaceChildren();
+  say("action-msg", "");
+
+  if (p.my_response === true) {
+    box.append(el("p", {}, `You accepted. Waiting for the others (${p.accepted} of ${p.size} accepted).`));
+    return;
+  }
+  if (flow.step === null) {
+    box.append(el("div", { class: "actions" },
+      el("button", { type: "button", id: "accept", onclick: () => respond({ action: "accept" }) }, "Accept"),
+      el("button", { type: "button", class: "secondary", id: "decline", onclick: () => setFlow("reason") }, "Decline…")));
+    return;
+  }
+
+  const back = (to) => el("button", { type: "button", class: "secondary", onclick: () => setFlow(to) }, "Back");
+  const picker = el("div", { class: "picker" });
+
+  if (flow.step === "reason") {
+    picker.append(el("p", {}, "Why are you declining? Your answer helps the next release get it right."));
+    for (const r of DECLINE_REASONS) {
+      picker.append(el("button", { type: "button", class: "secondary opt", "data-reason": r.reason,
+        onclick: () => chooseReason(r.reason) }, r.label, el("small", {}, r.hint)));
+    }
+    picker.append(el("div", { class: "actions" }, back(null)));
+  } else if (flow.step === "person") {
+    picker.append(el("p", {}, "Who? Members stay anonymous until the cab is confirmed."));
+    for (const handle of p.others) {
+      picker.append(el("button", { type: "button", class: "secondary opt", "data-handle": handle,
+        onclick: () => respond({ action: "decline", reason: "PERSON", payload: { named_student_id: handle } }) },
+        `Member ${handle}`));
+    }
+    picker.append(el("div", { class: "actions" }, back("reason")));
+  } else if (flow.step === "time") {
+    const r = data.request;
+    const range = (from) => { const o = []; for (let v = from; v <= MAX_FLEX; v += 5) o.push([v, `${v} min`]); return o; };
+    const early = el("select", { id: "w-early", "aria-label": "Earlier by" });
+    const late = el("select", { id: "w-late", "aria-label": "Later by" });
+    fill(early, range(r.b), Math.min(r.b + 15, MAX_FLEX));
+    fill(late, range(r.a), Math.min(r.a + 15, MAX_FLEX));
+    picker.append(
+      el("p", {}, "Widening your window makes a match likelier. You can only widen it, never narrow it."),
+      el("div", { class: "row" }, el("div", {}, el("label", { for: "w-early" }, "Earlier by"), early),
+        el("div", {}, el("label", { for: "w-late" }, "Later by"), late)),
+      el("div", { class: "actions" },
+        el("button", { type: "button", id: "widen", onclick: () =>
+          respond({ action: "decline", reason: "TIME", payload: { b: Number(early.value), a: Number(late.value) } }) },
+          "Decline & widen my window"),
+        el("button", { type: "button", class: "secondary", id: "keep", onclick: () =>
+          respond({ action: "decline", reason: "TIME" }) }, "Decline, keep my window"),
+        back("reason")));
+  } else if (flow.step === "plans") {
+    picker.append(el("p", {}, "This removes your request from the pool. Continue?"),
+      el("div", { class: "actions" },
+        el("button", { type: "button", id: "confirm-plans", onclick: () =>
+          respond({ action: "decline", reason: "PLANS_CHANGED" }) }, "Yes, remove my request"),
+        back("reason")));
+  }
+  box.append(picker);
+  const first = box.querySelector("button, select");
+  if (first) first.focus();
+}
+
+function setFlow(step) { flow = { step }; renderActions(data.proposal); }
+
+function chooseReason(reason) {
+  if (reason === "TOO_FEW") return respond({ action: "decline", reason: "TOO_FEW" });
+  setFlow({ PERSON: "person", TIME: "time", PLANS_CHANGED: "plans" }[reason]);
+}
+
+async function respond(body) {
   const p = data.proposal;
-  if (p) {
-    const h = document.createElement("h2"); h.style.marginTop = "16px";
-    h.textContent = p.state === "CONFIRMED" ? "Your cab is confirmed" : "Proposed group";
-    const pdl = document.createElement("dl");
-    row(pdl, "Departs", fromMinutes(p.departure_time));
-    row(pdl, "Group size", String(p.size));
-    if (p.explanation) row(pdl, "Why", p.explanation);
-    if (p.contacts) row(pdl, "Travelling with", p.contacts.join(", "));
-    box.append(h, pdl);
+  document.querySelectorAll("#actions button").forEach((b) => (b.disabled = true));
+  try {
+    const { ok, body: res } = await api(`/groups/${encodeURIComponent(p.group_id)}/respond`,
+      { method: "POST", body: JSON.stringify(body) });
+    if (!ok) {
+      say("action-msg", (res && res.error) || "Something went wrong.", "err");
+      document.querySelectorAll("#actions button").forEach((b) => (b.disabled = false));
+      return;
+    }
+    flow = { step: null };
+    if (body.action === "accept") {
+      notify(res.state === "CONFIRMED" ? "Your cab is confirmed." : "You accepted. Waiting for the others.", "ok", true);
+    } else {
+      suppressDissolveNotice = true;
+      notify(body.reason === "PLANS_CHANGED"
+        ? "Your request was removed."
+        : "You declined. The group was dissolved and you're back in the pool for the next release.", "warn");
+    }
+    lastKey = null;
+    await poll();
+  } catch {
+    say("action-msg", "Can't reach the server. Try again.", "err");
+    document.querySelectorAll("#actions button").forEach((b) => (b.disabled = false));
   }
 }
+
+// ------------------------------------------------------------------- board
+
+const count = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+
+function lastReleaseText(r) {
+  const parts = [];
+  if (r.groups_of_3) parts.push(`${count(r.groups_of_3, "cab", "cabs")} of three`);
+  if (r.groups_of_2) parts.push(`${count(r.groups_of_2, "cab", "cabs")} of two`);
+  if (r.ungrouped) parts.push(`${r.ungrouped} left alone`);
+  return `${count(r.pool_size, "student", "students")} → ${parts.join(", ") || "no groups"} · ${count(r.cabs_saved, "cab", "cabs")} saved`;
+}
+
+function renderBoard() {
+  $("board-card").classList.toggle("hidden", !board);
+  if (!board) return;
+  const route = data && data.request ? data.request.route
+    : !$("form-card").classList.contains("hidden") ? currentValues().route : null;
+
+  let waiting, last;
+  if (route) {
+    const [src, dst] = routeParts(route);
+    $("pool-label").textContent = `Waiting, ${LOCATIONS[src]} → ${LOCATIONS[dst]}`;
+    waiting = board.routes[route].pool_size;
+    last = board.routes[route].last_release;
+  } else {
+    $("pool-label").textContent = "Waiting to be grouped";
+    waiting = Object.values(board.routes).reduce((s, r) => s + r.pool_size, 0);
+    last = null;
+  }
+  $("pool").textContent = String(waiting);
+  $("last").textContent = last ? lastReleaseText(last) : "nothing grouped on this route yet";
+}
+
+function tickBoard() {
+  if (!board) return;
+  if (!board.next_release_at) { $("countdown").textContent = "waiting for the first release"; return; }
+  const left = board.next_release_at - nowServer();
+  $("countdown").textContent = left > 0 ? mmss(left) : "due any moment";
+}
+
+function tickDeadline() {
+  const d = $("deadline");
+  if (!d) return;
+  const left = Number(d.dataset.at) - nowServer();
+  d.textContent = left > 0 ? `Respond within ${mmss(left)}` : "The deadline has passed; this group is about to be dissolved.";
+}
+
+// ---------------------------------------------------------------- polling
 
 async function poll() {
   if (!email) return;
   try {
-    const { ok, body } = await api("/requests/me");
-    if (ok) render(body);
-    const board = await api("/board");
-    if (board.ok) {
-      boardOffset = board.body.server_time - Math.floor(Date.now() / 1000);
-      nextReleaseAt = board.body.next_release_at;
+    const [me, b] = await Promise.all([api("/requests/me"), api("/board")]);
+    if (b.ok) {
+      clockOffset = b.body.server_time - Math.floor(Date.now() / 1000);
+      // a new run row moves next_release_at: make the release visible, not a dead ten seconds
+      if (board && b.body.next_release_at && b.body.next_release_at !== board.next_release_at) {
+        const card = $("board-card");
+        card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
+      }
+      board = b.body;
+      tickBoard();  // don't leave the placeholder up until the next 1s tick
     }
-  } catch { /* transient; next tick retries */ }
-}
-
-function tickBoard() {
-  if (!nextReleaseAt) { $("board").textContent = "No release has run yet."; return; }
-  const left = nextReleaseAt - (Math.floor(Date.now() / 1000) + boardOffset);
-  $("board").textContent = left > 0
-    ? `Next release in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`
-    : "A release is due any moment.";
+    if (me.ok) { lastKey === JSON.stringify(me.body) ? renderBoard() : render(me.body); }
+    else renderBoard();
+  } catch { /* transient; the next tick retries */ }
 }
 
 function enter(addr) {
   email = addr;
   $("signin").classList.add("hidden");
-  $("form-card").classList.remove("hidden");
+  $("who").textContent = addr;
+  $("who-line").classList.remove("hidden");
   buildForm();
+  $("form-card").classList.remove("hidden");
   poll();
   pollTimer = setInterval(poll, 3000);
+}
+
+function leave() {
+  clearInterval(pollTimer); store.clear(); email = null; data = null; board = null; lastKey = null; flow = { step: null };
+  for (const id of ["form-card", "status-card", "board-card", "who-line", "notice"]) $(id).classList.add("hidden");
+  $("signin").classList.remove("hidden");
 }
 
 $("signin-btn").addEventListener("click", () => {
@@ -253,16 +516,12 @@ $("signin-btn").addEventListener("click", () => {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) return say("signin-msg", "Enter a valid email address.", "err");
   store.set(v); enter(v);
 });
-$("signout").addEventListener("click", () => {
-  clearInterval(pollTimer); store.clear(); email = null;
-  $("form-card").classList.add("hidden"); $("status-card").classList.add("hidden");
-  $("signin").classList.remove("hidden");
-});
+$("signout").addEventListener("click", leave);
 ["src", "dst", "hour", "minute", "early", "late"].forEach((id) =>
-  $(id).addEventListener("change", () => { if (id === "src") refreshDestinations(); updateWindow(); }));
+  $(id).addEventListener("change", () => { if (id === "src") refreshDestinations(); updateWindow(); renderBoard(); }));
 $("submit").addEventListener("click", submit);
 
-setInterval(tickBoard, 1000);
+setInterval(() => { tickBoard(); tickDeadline(); }, 1000);
 const saved = store.get();
 if (saved) enter(saved);
 </script>

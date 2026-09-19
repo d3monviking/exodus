@@ -20,6 +20,7 @@ def _proposal(group: dict, who: dict) -> dict:
         # members are anonymous until CONFIRMED; a decline can only name one by handle
         "others": [str(i + 1) for i in range(len(members) - 1)],
         "my_response": (group.get("responses") or {}).get(who["id"]),
+        "accepted": sum(1 for m in members if (group.get("responses") or {}).get(m) is True),
         "explanation": group.get("explanations", {}).get(who["id"]),
         "contacts": None,
     }
