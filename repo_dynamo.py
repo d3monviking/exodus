@@ -177,16 +177,77 @@ class DynamoRepo(Repo):
             ExpressionAttributeValues={":a": accepted},
         )
 
-    def dissolve(self, group_id: str) -> None:
-        """The one place a group is torn down. respond and lifecycle_sweep both call this."""
-        group = self.groups.get_item(Key={"group_id": group_id}).get("Item")
+    def get_group(self, group_id: str) -> dict | None:
+        # consistent read: two members accepting at once must each see the other's response
+        item = self.groups.get_item(Key={"group_id": group_id}, ConsistentRead=True).get("Item")
+        return _to_native(item) if item else None
+
+    def formed_groups(self) -> list[dict]:
+        from boto3.dynamodb.conditions import Attr
+
+        items, kwargs = [], {"FilterExpression": Attr("state").eq("FORMED")}
+        while True:
+            page = self.groups.scan(**kwargs)
+            items += page.get("Items", [])
+            if "LastEvaluatedKey" not in page:
+                return [_to_native(i) for i in items]
+            kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+    def confirm(self, group_id: str) -> None:
+        """The one place a group is confirmed: group and every member move together."""
+        group = self.groups.get_item(Key={"group_id": group_id}, ConsistentRead=True).get("Item")
         if group is None:
             return
         self.groups.update_item(
             Key={"group_id": group_id},
             UpdateExpression="SET #s = :s",
             ExpressionAttributeNames={"#s": "state"},
-            ExpressionAttributeValues={":s": "DISSOLVED"},
+            ExpressionAttributeValues={":s": "CONFIRMED"},
+        )
+        for member in group.get("members", []):
+            req = self.requests.get_item(Key={"student_id": member}, ConsistentRead=True).get("Item")
+            if req is not None and req.get("current_group_id") == group_id:
+                self.requests.update_item(
+                    Key={"student_id": member},
+                    UpdateExpression="SET #s = :s",
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={":s": "CONFIRMED"},
+                )
+
+    def revive_sat_out(self, route: str) -> list[str]:
+        """Requests that sat out the previous release rejoin the pool with a fresh decline budget."""
+        from boto3.dynamodb.conditions import Key
+
+        resp = self.requests.query(
+            IndexName="route-status-index",
+            KeyConditionExpression=Key("route").eq(route) & Key("status").eq("SAT_OUT"),
+        )
+        revived = []
+        for item in resp.get("Items", []):
+            self.requests.update_item(
+                Key={"student_id": item["student_id"]},
+                UpdateExpression="SET #s = :s, decline_count = :z",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":s": "PENDING", ":z": 0},
+            )
+            revived.append(item["student_id"])
+        return revived
+
+    def dissolve(self, group_id: str, reason: str | None = None, declined_by: str | None = None) -> None:
+        """The one place a group is torn down. respond and lifecycle_sweep both call this."""
+        group = self.groups.get_item(Key={"group_id": group_id}, ConsistentRead=True).get("Item")
+        if group is None:
+            return
+        names, values, sets = {"#s": "state"}, {":s": "DISSOLVED"}, ["#s = :s"]
+        for field, value in (("dissolved_reason", reason), ("declined_by", declined_by)):
+            if value:
+                names[f"#{field}"], values[f":{field}"] = field, value
+                sets.append(f"#{field} = :{field}")
+        self.groups.update_item(
+            Key={"group_id": group_id},
+            UpdateExpression="SET " + ", ".join(sets),
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
         )
         for member in group.get("members", []):
             req = self.requests.get_item(Key={"student_id": member}).get("Item")

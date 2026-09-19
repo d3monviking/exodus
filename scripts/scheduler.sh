@@ -38,6 +38,8 @@ RELEASE_PID=$!
 sweep_loop &
 SWEEP_PID=$!
 
-trap 'echo "stopping scheduler"; kill "$RELEASE_PID" "$SWEEP_PID" 2>/dev/null' EXIT INT TERM
+cleanup() { echo "stopping scheduler"; kill "$RELEASE_PID" "$SWEEP_PID" 2>/dev/null || true; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 wait

@@ -1,0 +1,208 @@
+import json
+
+import pytest
+
+from config import CONFIG
+from handlers import get_my_request, lifecycle_sweep, release_orchestrator as ro, respond
+from lifecycle import on_decline
+from repo import FakeRepo
+
+NOW = 1_800_000_000
+DEADLINE = NOW + CONFIG["accept_window_minutes"] * 60
+EMAIL = {s: f"{s}@iiitb.ac.in" for s in ("s1", "s2", "s3", "zz")}
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    r = FakeRepo(tmp_path / "db.json")
+    for mod in (respond, get_my_request, lifecycle_sweep):
+        monkeypatch.setattr(mod, "get_repo", lambda r=r: r)
+    monkeypatch.setattr(respond.time, "time", lambda: NOW + 10)
+    return r
+
+
+def add(repo, sid, p, b, a, route="COLLEGE_AIRPORT"):
+    repo.put_request({"student_id": sid, "route": route, "p": p, "b": b, "a": a, "min_group_size": 2,
+                      "status": "PENDING", "decline_count": 0, "declined_anchors": []})
+
+
+@pytest.fixture
+def grouped(repo):
+    """s1, s2, s3 released into one FORMED triple."""
+    add(repo, "s1", 1020, 30, 30); add(repo, "s2", 1030, 20, 20); add(repo, "s3", 1040, 15, 30)
+    ro.run_release(repo, now=NOW)
+    return repo.group_for("s1")["group_id"]
+
+
+def call(sid, group_id, body, headers=True):
+    event = {"headers": {"X-Student-Email": EMAIL[sid]} if headers else {},
+             "pathParameters": {"id": group_id}, "body": json.dumps(body)}
+    resp = respond.handler(event, None)
+    return resp["statusCode"], json.loads(resp["body"])
+
+
+def statuses(repo, *ids):
+    return {i: (repo.get_request(i) or {}).get("status") for i in ids}
+
+
+# ---- accepting ----
+
+def test_all_accept_confirms_group_and_members(repo, grouped):
+    for sid in ("s1", "s2"):
+        code, body = call(sid, grouped, {"action": "accept"})
+        assert code == 200 and body["state"] == "FORMED"
+    code, body = call("s3", grouped, {"action": "accept"})
+    assert body == {"state": "CONFIRMED", "accepted": 3, "of": 3}
+    assert set(statuses(repo, "s1", "s2", "s3").values()) == {"CONFIRMED"}
+
+
+def test_accept_is_idempotent_and_locks_the_member_in(repo, grouped):
+    call("s1", grouped, {"action": "accept"})
+    assert call("s1", grouped, {"action": "accept"})[1]["accepted"] == 1
+    code, body = call("s1", grouped, {"action": "decline", "reason": "TIME"})
+    assert code == 409 and "locks you in" in body["error"]
+    assert repo.get_group(grouped)["state"] == "FORMED"
+
+
+@pytest.mark.parametrize("who,gid,body,code", [
+    ("s1", "nope", {"action": "accept"}, 404),
+    ("zz", "GROUP", {"action": "accept"}, 403),                     # not a member (Cedar)
+    ("s1", "GROUP", {"action": "dance"}, 400),
+    ("s1", "GROUP", {"action": "decline", "reason": "BORED"}, 400),
+    ("s1", "GROUP", {"action": "decline", "reason": "TIMEOUT"}, 400),  # system-only reason
+    ("s1", "GROUP", {"action": "decline", "reason": "TIME", "payload": {"b": 3}}, 400),
+    ("s1", "GROUP", {"action": "decline", "reason": "PERSON", "payload": {"named_student_id": "s2"}}, 400),
+    ("s1", "GROUP", {"action": "decline", "reason": "PERSON", "payload": {"named_student_id": "9"}}, 400),
+])
+def test_bad_requests_are_rejected(repo, grouped, who, gid, body, code):
+    assert call(who, grouped if gid == "GROUP" else gid, body)[0] == code
+    assert repo.get_group(grouped)["state"] == "FORMED"  # nothing was dissolved by a bad request
+
+
+def test_no_identity_is_401(repo, grouped):
+    assert call("s1", grouped, {"action": "accept"}, headers=False)[0] == 401
+
+
+def test_late_and_stale_responses_are_409(repo, grouped, monkeypatch):
+    monkeypatch.setattr(respond.time, "time", lambda: DEADLINE + 1)
+    assert call("s1", grouped, {"action": "accept"})[0] == 409
+    monkeypatch.setattr(respond.time, "time", lambda: NOW + 10)
+    call("s1", grouped, {"action": "decline", "reason": "TOO_FEW"})
+    assert call("s2", grouped, {"action": "accept"})[0] == 409  # already DISSOLVED
+
+
+# ---- declining: every reason, and that everyone returns to the pool ----
+
+def test_decline_dissolves_and_returns_everyone_to_the_pool(repo, grouped):
+    code, body = call("s2", grouped, {"action": "decline", "reason": "TOO_FEW"})
+    assert (code, body) == (200, {"state": "DISSOLVED", "reason": "TOO_FEW"})
+    g = repo.get_group(grouped)
+    assert (g["state"], g["dissolved_reason"], g["declined_by"]) == ("DISSOLVED", "TOO_FEW", "s2")
+    assert set(statuses(repo, "s1", "s2", "s3").values()) == {"PENDING"}
+    assert all(repo.get_request(s).get("current_group_id") is None for s in ("s1", "s2", "s3"))
+
+
+def test_person_decline_blocks_the_named_member_and_never_leaks_them(repo, grouped):
+    # for s1 the others are sorted [s2, s3]; handle "2" is s3
+    code, body = call("s1", grouped, {"action": "decline", "reason": "PERSON", "payload": {"named_student_id": "2"}})
+    assert code == 200 and "s3" not in json.dumps(body)
+    assert "s3" in repo.get_request("s1")["blocked_with"]
+    assert repo.get_request("s1")["decline_count"] == 0  # a block is a state change: no budget used
+
+    # the next release routes around it: s1 and s3 are never together again
+    out = ro.run_release(repo, now=NOW + 60)["COLLEGE_AIRPORT"]
+    for g in out["groups"]:
+        assert not {"s1", "s3"} <= set(g["members"])
+    assert out["groups"] and out["stats"]["ungrouped"] == 1
+
+
+def test_time_decline_that_widens_updates_the_window_and_uses_no_budget(repo, grouped):
+    call("s1", grouped, {"action": "decline", "reason": "TIME", "payload": {"b": 60, "a": 10}})
+    r = repo.get_request("s1")
+    assert (r["b"], r["a"], r["decline_count"]) == (60, 30, 0)  # a is never shrunk
+
+
+def test_time_decline_that_changes_nothing_uses_budget_and_anchors_server_facts(repo, grouped):
+    call("s1", grouped, {"action": "decline", "reason": "TIME",
+                         "payload": {"b": 30, "a": 30, "departure_time": 9999, "group_size": 9}})
+    r = repo.get_request("s1")
+    assert r["decline_count"] == 1
+    assert r["declined_anchors"] == [{"T": repo.get_group(grouped)["departure_time"], "size": 3}]
+
+
+def test_too_few_sets_min_group_size(repo, grouped):
+    call("s1", grouped, {"action": "decline", "reason": "TOO_FEW"})
+    assert repo.get_request("s1")["min_group_size"] == 3
+
+
+def test_plans_changed_withdraws_the_request_but_frees_the_others(repo, grouped):
+    call("s1", grouped, {"action": "decline", "reason": "PLANS_CHANGED"})
+    assert statuses(repo, "s1", "s2", "s3") == {"s1": None, "s2": "PENDING", "s3": "PENDING"}
+
+
+# ---- termination: the decline budget ----
+
+def test_unchanged_declines_exhaust_the_budget_and_the_loop_ends(repo, grouped):
+    same = {"action": "decline", "reason": "TIME", "payload": {"b": 30, "a": 30}}
+    call("s1", grouped, same)
+    ro.run_release(repo, now=NOW + 60)
+    call("s1", repo.group_for("s1")["group_id"], same)
+    assert repo.get_request("s1")["decline_count"] == 2
+
+    out = ro.run_release(repo, now=NOW + 120)["COLLEGE_AIRPORT"]
+    assert out["sat_out"] == ["s1"] and repo.get_request("s1")["status"] == "SAT_OUT"
+    assert all("s1" not in g["members"] for g in out["groups"])
+
+    out = ro.run_release(repo, now=NOW + 180)["COLLEGE_AIRPORT"]  # next release: s1 is back, budget reset
+    assert out["revived"] == ["s1"]
+    assert (repo.get_request("s1")["status"], repo.get_request("s1")["decline_count"]) == ("PENDING", 0)
+
+
+# ---- the sweep ----
+
+def test_sweep_penalises_only_the_silent_and_dissolves(repo, grouped):
+    call("s1", grouped, {"action": "accept"})
+    assert lifecycle_sweep.sweep(repo, DEADLINE - 1)["dissolved"] == []  # not yet due
+
+    out = lifecycle_sweep.sweep(repo, DEADLINE + 1)
+    assert out["dissolved"] == [{"group_id": grouped, "timed_out": ["s2", "s3"]}]
+    assert (repo.get_request("s1")["decline_count"], repo.get_request("s2")["decline_count"],
+            repo.get_request("s3")["decline_count"]) == (0, 1, 1)
+    assert repo.get_group(grouped)["dissolved_reason"] == "TIMEOUT"
+    assert set(statuses(repo, "s1", "s2", "s3").values()) == {"PENDING"}
+
+
+def test_sweep_confirms_a_fully_accepted_group_instead_of_dissolving_it(repo, grouped):
+    for sid in ("s1", "s2", "s3"):  # responses recorded but the confirming write was "lost"
+        repo.record_response(grouped, sid, True)
+    out = lifecycle_sweep.sweep(repo, DEADLINE + 1)
+    assert out["confirmed"] == [grouped] and out["dissolved"] == []
+    assert repo.get_group(grouped)["state"] == "CONFIRMED"
+
+
+def test_sweep_is_idempotent(repo, grouped):
+    lifecycle_sweep.sweep(repo, DEADLINE + 1)
+    again = lifecycle_sweep.sweep(repo, DEADLINE + 2)
+    assert again["dissolved"] == [] and repo.get_request("s2")["decline_count"] == 1
+
+
+def test_timeouts_count_toward_the_budget(repo, grouped):
+    lifecycle_sweep.sweep(repo, DEADLINE + 1)
+    ro.run_release(repo, now=NOW + 2000)
+    lifecycle_sweep.sweep(repo, NOW + 2000 + DEADLINE)
+    assert repo.get_request("s2")["decline_count"] == 2
+    assert on_decline(repo.get_request("s2"), "TIMEOUT", {}) == {"increment_decline_count": 1}
+
+
+# ---- what the student sees ----
+
+def test_proposal_exposes_handles_not_identities_until_confirmed(repo, grouped):
+    ev = {"headers": {"X-Student-Email": EMAIL["s1"]}}
+    p = json.loads(get_my_request.handler(ev, None)["body"])["proposal"]
+    assert p["others"] == ["1", "2"] and p["contacts"] is None
+    assert "s2" not in json.dumps(p) and "s3" not in json.dumps(p)
+
+    for sid in ("s1", "s2", "s3"):
+        call(sid, grouped, {"action": "accept"})
+    p = json.loads(get_my_request.handler(ev, None)["body"])["proposal"]
+    assert p["contacts"] == ["s2@iiitb.ac.in", "s3@iiitb.ac.in"]

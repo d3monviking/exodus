@@ -17,6 +17,8 @@ def _proposal(group: dict, who: dict) -> dict:
         "departure_time": group["departure_time"],
         "accept_deadline": group.get("accept_deadline"),
         "size": len(members),
+        # members are anonymous until CONFIRMED; a decline can only name one by handle
+        "others": [str(i + 1) for i in range(len(members) - 1)],
         "my_response": (group.get("responses") or {}).get(who["id"]),
         "explanation": group.get("explanations", {}).get(who["id"]),
         "contacts": None,

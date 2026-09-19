@@ -85,6 +85,18 @@ def should_sit_out(request: dict, config: dict) -> bool:
 | `increment_decline_count` | Counter on the request |
 | `add_anchor` | Append to `declined_anchors` |
 
+### `on_decline` payload — PROPOSED, needs the solver side's agreement
+
+The docs never defined `payload`. The platform passes exactly these keys, and drops anything else a client sends:
+
+| Key | Set by | Meaning |
+| --- | --- | --- |
+| `named_student_id` | client, validated | A real student id. Members are anonymous until CONFIRMED, so the client sends an opaque handle ("1", "2", ...) and the platform resolves it to the id before calling `on_decline`. |
+| `b`, `a` | client, validated (int, 5-240) | A proposed new window. `on_decline` decides whether it counts as a widening. |
+| `departure_time`, `group_size` | **platform only** | The declined group's facts, always overwriting anything the client sent, so a client can't forge an anchor. |
+
+`reason` is one of `REASONS`. `TIMEOUT` is only ever sent by the sweep, never accepted from a client. An unchanged window must not count as a state change, or a student could dodge the decline budget and re-loop the release forever.
+
 ## Who never touches what
 
 - The solver side never imports an AWS SDK, never does HTTP, never touches DynamoDB, never interprets a decline reason as a storage write.

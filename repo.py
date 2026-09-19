@@ -160,12 +160,49 @@ class FakeRepo(Repo):
             group.setdefault("responses", {})[student_id] = accepted
             self._write(data)
 
-    def dissolve(self, group_id: str) -> None:
+    def get_group(self, group_id: str) -> dict | None:
+        with self._lock:
+            return self._read()["groups"].get(group_id)
+
+    def formed_groups(self) -> list[dict]:
+        with self._lock:
+            return [g for g in self._read()["groups"].values() if g["state"] == "FORMED"]
+
+    def confirm(self, group_id: str) -> None:
+        """The one place a group is confirmed: group and every member move together."""
+        with self._lock:
+            data = self._read()
+            group = data["groups"][group_id]
+            group["state"] = "CONFIRMED"
+            for member in group["members"]:
+                req = data["requests"].get(member)
+                if req is not None and req.get("current_group_id") == group_id:
+                    req["status"] = "CONFIRMED"
+            self._write(data)
+
+    def revive_sat_out(self, route: str) -> list[str]:
+        """Requests that sat out the previous release rejoin the pool with a fresh decline budget."""
+        with self._lock:
+            data = self._read()
+            revived = []
+            for req in data["requests"].values():
+                if req["route"] == route and req["status"] == "SAT_OUT":
+                    req["status"] = "PENDING"
+                    req["decline_count"] = 0
+                    revived.append(req["student_id"])
+            self._write(data)
+            return revived
+
+    def dissolve(self, group_id: str, reason: str | None = None, declined_by: str | None = None) -> None:
         """The one place a group is torn down. respond and lifecycle_sweep both call this."""
         with self._lock:
             data = self._read()
             group = data["groups"][group_id]
             group["state"] = "DISSOLVED"
+            if reason:
+                group["dissolved_reason"] = reason
+            if declined_by:
+                group["declined_by"] = declined_by
             for member in group["members"]:
                 req = data["requests"].get(member)
                 if req is not None and req.get("current_group_id") == group_id:

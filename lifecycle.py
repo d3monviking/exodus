@@ -24,13 +24,13 @@ def on_decline(request: dict, reason: str, payload: dict) -> dict:
             delta["block_pair"] = [request["student_id"], named]
 
     elif reason == "TIME":
-        new_b = payload.get("b")
-        new_a = payload.get("a")
-        if new_b is not None or new_a is not None:
-            delta["update_request"] = {
-                "b": new_b if new_b is not None else request["b"],
-                "a": new_a if new_a is not None else request["a"],
-            }
+        # Only a genuine widening is a state change, and a window never shrinks.
+        # An unchanged window must fall through to the decline counter, otherwise
+        # "widening" to the same values would dodge the budget and loop forever.
+        b = max(request["b"], payload["b"]) if payload.get("b") is not None else request["b"]
+        a = max(request["a"], payload["a"]) if payload.get("a") is not None else request["a"]
+        if (b, a) != (request["b"], request["a"]):
+            delta["update_request"] = {"b": b, "a": a}
         else:
             group_size = payload.get("group_size")
             departure_time = payload.get("departure_time")

@@ -3,8 +3,9 @@ Fires a release: for each route, solve the whole open pool at once and turn
 the result into FORMED groups. Triggered by the timer loop over
 POST /internal/release (or by an EventBridge event when deployed to AWS).
 
-Not yet wired: applying the decline-budget sit-out (needs the decline flow,
-which lands with POST /groups/{id}/respond).
+Decline budget: a student who has used it up sits out this release (SAT_OUT)
+and is revived, with a fresh budget, at the start of the next. That guarantees
+a re-proposed, re-declined group can't loop forever.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from cedar_authz import is_permitted
 from config import CONFIG, ROUTES
 from explain_templated import explain
 from handlers._common import response
+from lifecycle import should_sit_out
 from repo import get_repo
 from solver import solve
 
@@ -42,7 +44,13 @@ def _stats_from_formed(pool_size: int, formed: list[dict]) -> dict:
 
 
 def release_route(repo, route: str, now: int) -> dict:
+    # Order matters: revive first, so anyone marked SAT_OUT below sits out exactly this release.
+    revived = repo.revive_sat_out(route)
     pool = repo.open_pool(route)
+    sat_out = [r["student_id"] for r in pool if should_sit_out(r, CONFIG)]
+    for sid in sat_out:
+        repo.set_status(sid, "SAT_OUT")
+    pool = [r for r in pool if r["student_id"] not in sat_out]
     by_id = {r["student_id"]: r for r in pool}
     result = solve(pool, CONFIG) if pool else {"groups": [], "ungrouped": [], "stats": None}
 
@@ -90,7 +98,7 @@ def release_route(repo, route: str, now: int) -> dict:
     audit_key = None
     if pool:
         release = {"release_id": f"{route}-{now}-{uuid.uuid4().hex[:6]}", "route": route, "ran_at": now,
-                   "groups_rejected": rejected, **stats}
+                   "groups_rejected": rejected, "sat_out": len(sat_out), **stats}
         repo.put_release(release)
         try:
             audit_key = repo.append_release_log(release, formed)
@@ -99,6 +107,7 @@ def release_route(repo, route: str, now: int) -> dict:
             traceback.print_exc(file=sys.stderr)
 
     return {"status": "released", "stats": stats, "groups_rejected": rejected,
+            "sat_out": sat_out, "revived": revived,
             "groups": [{"group_id": g["group_id"], "members": g["members"],
                         "departure_time": g["departure_time"]} for g in formed],
             "audit_log": audit_key}
