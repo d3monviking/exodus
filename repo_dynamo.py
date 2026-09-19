@@ -44,6 +44,17 @@ def _clean_numbers(item: dict) -> dict:
     return item
 
 
+def _to_dynamo(obj):
+    """Recursively turn float into Decimal; boto3 refuses to write floats."""
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    if isinstance(obj, dict):
+        return {k: _to_dynamo(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_dynamo(v) for v in obj]
+    return obj
+
+
 def _to_native(obj):
     """Recursively turn Decimal into int (or float if fractional), for JSON-safe output."""
     if isinstance(obj, Decimal):
@@ -141,7 +152,7 @@ class DynamoRepo(Repo):
         )
 
     def put_group(self, group: dict) -> None:
-        self.groups.put_item(Item=group)
+        self.groups.put_item(Item=_to_dynamo(group))
         for member in group["members"]:
             self.requests.update_item(
                 Key={"student_id": member},
@@ -199,7 +210,31 @@ class DynamoRepo(Repo):
         )
 
     def put_release(self, release: dict) -> None:
-        self.releases.put_item(Item=release)
+        self.releases.put_item(Item=_to_dynamo(release))
+
+    def append_release_log(self, release: dict, groups: list[dict]) -> str:
+        """One S3 object per release (S3 has no append). Returns the object key."""
+        import json
+
+        from botocore.config import Config
+
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=ENDPOINT,
+            region_name=REGION,
+            aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID", "test"),
+            aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
+            # virtual-host style would resolve bucket.localstack inside the docker network
+            config=Config(s3={"addressing_style": "path"}),
+        )
+        key = f"releases/{release['ran_at']}-{release['release_id']}.json"
+        s3.put_object(
+            Bucket=os.environ.get("RELEASE_LOG_BUCKET", "exodus-release-log"),
+            Key=key,
+            Body=json.dumps({"release": release, "groups": groups}, default=str).encode(),
+            ContentType="application/json",
+        )
+        return key
 
     def apply_decline_delta(self, student_id: str, delta: dict) -> None:
         """Dispatcher: persists each key of on_decline()'s return value.

@@ -16,20 +16,16 @@ def handler(event, context):
     repo = get_repo()
     now = int(time.time())
 
-    routes = {}
-    last_ran = None
-    for route in ROUTES:
-        release = repo.latest_release(route)
-        routes[route] = {
-            "pool_size": len(repo.open_pool(route)),
-            "last_release": release,
-        }
-        if release:
-            last_ran = max(last_ran or 0, release["ran_at"])
+    routes = {
+        route: {"pool_size": len(repo.open_pool(route)), "last_release": repo.latest_release(route)}
+        for route in ROUTES
+    }
 
     # Approximate: the timer loop fires every RELEASE_INTERVAL_SECONDS, so the
-    # next one lands one interval after the last. Unknown until a release has run.
-    next_release_at = last_ran + RELEASE_INTERVAL_SECONDS if last_ran else None
+    # next run lands one interval after the last. The run-level row ("ALL") is
+    # written on every run, idle or not, so this stays accurate while nothing is pending.
+    last_run = repo.latest_release("ALL")
+    next_release_at = last_run["ran_at"] + RELEASE_INTERVAL_SECONDS if last_run else None
 
     return response(
         200,

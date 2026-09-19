@@ -191,6 +191,15 @@ class FakeRepo(Repo):
             data["releases"][release["release_id"]] = release
             self._write(data)
 
+    def append_release_log(self, release: dict, groups: list[dict]) -> str:
+        """Local stand-in for the S3 audit log. Returns the file path used as the key."""
+        log_dir = self.path.parent / "release_log"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        key = f"releases/{release['ran_at']}-{release['release_id']}.json"
+        out = log_dir / key.replace("/", "_")
+        out.write_text(json.dumps({"release": release, "groups": groups}, indent=2, default=str))
+        return key
+
     def apply_decline_delta(self, student_id: str, delta: dict) -> None:
         """Dispatcher: persists each key of on_decline()'s return value.
         No branching on reason strings — this is purely key-driven."""

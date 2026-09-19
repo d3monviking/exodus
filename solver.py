@@ -1,89 +1,82 @@
 """
-STUB solver — hours 0-2 placeholder so the platform side can be built and
-tested end to end before the real algorithm exists.
+STUB solver — placeholder so the platform side can be built and tested end to
+end before the real algorithm exists.
 
 Matches the contract exactly (contracts.md): pure, deterministic, stdlib
-only, no I/O. Real implementation replaces this file; nothing on the
+only, no I/O. The real implementation replaces this file; nothing on the
 platform side should need to change when that happens.
 
-This stub does simple contiguous grouping by sorted preferred time with no
-cost optimisation — just enough realism that handlers, Cedar checks and the
-frontend have believable data to work against.
+Greedy over requests sorted by preferred time: try a triple, then a pair,
+else leave the request ungrouped. A group is only formed if it is feasible
+(a grid-aligned departure time exists inside every member's window), nobody
+is blocked from anyone else in it, and every member accepts that group size.
+No cost optimisation.
 """
 
 from __future__ import annotations
 
 
-def _round_down_to_grid(t: int, grid: int) -> int:
-    return t - (t % grid)
+def _penalty(r: dict, T: int) -> float:
+    if T < r["p"]:
+        return (r["p"] - T) / r["b"]
+    if T > r["p"]:
+        return (T - r["p"]) / r["a"]
+    return 0.0
+
+
+def _try_group(chunk: list[dict], grid: int) -> tuple[int, dict] | None:
+    size = len(chunk)
+    ids = {r["student_id"] for r in chunk}
+    if any(r["min_group_size"] > size or ids & set(r.get("blocked_with", [])) for r in chunk):
+        return None
+
+    lo = max(r["p"] - r["b"] for r in chunk)
+    hi = min(r["p"] + r["a"] for r in chunk)
+    first = -(-lo // grid) * grid  # ceil to grid
+    last = (hi // grid) * grid     # floor to grid
+    if first > last:
+        return None
+
+    target = sorted(r["p"] for r in chunk)[size // 2]
+    T = min(max(target - target % grid, first), last)
+    return T, {r["student_id"]: round(_penalty(r, T), 4) for r in chunk}
 
 
 def solve(requests: list[dict], config: dict) -> dict:
     grid = config["grid_minutes"]
-    max_group = config["max_group"]
-
-    pool = sorted(requests, key=lambda r: r["p"])
+    pool = sorted(requests, key=lambda r: (r["p"], r["student_id"]))
     groups: list[dict] = []
     ungrouped: list[str] = []
 
     i = 0
-    n = len(pool)
-    while i < n:
-        chunk = pool[i : i + max_group]
-        if len(chunk) < 2:
-            for r in chunk:
-                ungrouped.append(r["student_id"])
-            i += len(chunk)
-            continue
-
-        blocked = False
-        ids = {r["student_id"] for r in chunk}
-        for r in chunk:
-            if ids & set(r.get("blocked_with", [])):
-                blocked = True
+    while i < len(pool):
+        placed = False
+        for size in range(min(config["max_group"], len(pool) - i), 1, -1):
+            chunk = pool[i : i + size]
+            found = _try_group(chunk, grid)
+            if found:
+                T, penalties = found
+                groups.append(
+                    {
+                        "members": [r["student_id"] for r in chunk],
+                        "departure_time": T,
+                        "penalties": penalties,
+                        "cost": round(sum(penalties.values()), 4),
+                    }
+                )
+                i += size
+                placed = True
                 break
-
-        if blocked:
-            ungrouped.append(chunk[0]["student_id"])
+        if not placed:
+            ungrouped.append(pool[i]["student_id"])
             i += 1
-            continue
-
-        mid = chunk[len(chunk) // 2]["p"]
-        T = _round_down_to_grid(mid, grid)
-
-        penalties = {}
-        for r in chunk:
-            if T < r["p"]:
-                penalties[r["student_id"]] = min(1.0, (r["p"] - T) / max(r["b"], 1))
-            elif T > r["p"]:
-                penalties[r["student_id"]] = min(1.0, (T - r["p"]) / max(r["a"], 1))
-            else:
-                penalties[r["student_id"]] = 0.0
-
-        cost = sum(penalties.values())
-
-        groups.append(
-            {
-                "members": [r["student_id"] for r in chunk],
-                "departure_time": T,
-                "penalties": penalties,
-                "cost": round(cost, 4),
-            }
-        )
-        i += len(chunk)
-
-    groups_of_3 = sum(1 for g in groups if len(g["members"]) == 3)
-    groups_of_2 = sum(1 for g in groups if len(g["members"]) == 2)
-    cabs_used = len(groups) + len(ungrouped)
-    cabs_without_sharing = len(requests)
 
     stats = {
         "pool_size": len(requests),
-        "groups_of_3": groups_of_3,
-        "groups_of_2": groups_of_2,
+        "groups_of_3": sum(1 for g in groups if len(g["members"]) == 3),
+        "groups_of_2": sum(1 for g in groups if len(g["members"]) == 2),
         "ungrouped": len(ungrouped),
-        "cabs_saved": cabs_without_sharing - cabs_used,
+        "cabs_saved": sum(len(g["members"]) for g in groups) - len(groups),
         "total_cost": round(sum(g["cost"] for g in groups), 4),
     }
-
     return {"groups": groups, "ungrouped": ungrouped, "stats": stats}

@@ -96,6 +96,28 @@ def main() -> None:
         ddb.get_waiter("table_exists").wait(TableName=name)
 
     print("all tables ready:", sorted(t["TableName"] for t in TABLES))
+    reset_bucket()
+
+
+def reset_bucket() -> None:
+    from botocore.config import Config
+
+    bucket = os.environ.get("RELEASE_LOG_BUCKET", "exodus-release-log")
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=ENDPOINT,
+        region_name=REGION,
+        aws_access_key_id="test",
+        aws_secret_access_key="test",
+        config=Config(s3={"addressing_style": "path"}),
+    )
+    if bucket in {b["Name"] for b in s3.list_buckets().get("Buckets", [])}:
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket):
+            for obj in page.get("Contents", []):
+                s3.delete_object(Bucket=bucket, Key=obj["Key"])
+        s3.delete_bucket(Bucket=bucket)
+    s3.create_bucket(Bucket=bucket)
+    print("audit bucket ready:", bucket)
 
 
 if __name__ == "__main__":

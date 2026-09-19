@@ -12,6 +12,7 @@ CONFIG = {
     "max_group": 3,             # cab capacity
     "accept_window_minutes": 20,  # time to accept/decline a proposal
     "decline_budget": 2,        # no-state-change declines before sit-out
+    "min_release_gap_seconds": 10,  # a route can't be released twice within this window
 }
 
 ROUTES = [
