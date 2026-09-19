@@ -4,21 +4,27 @@ Seed the pool through the real API (so Cedar and validation run too).
 Stdlib only. Deterministic for a given --seed, so rehearsals are repeatable.
 
   scripts/seed.py                    # 3 students on COLLEGE_AIRPORT: one clean triple
-  scripts/seed.py --count 40 --seed 3
+  scripts/seed.py --count 40 --seed 3   # the demo pool
+
+Any other pool comes from poolgen, the same generator the solver is tuned on,
+so a seeded board shows exactly what `scripts/sweep.py --as-submitted` reports
+for that seed. Only route, p, b and a are sent: that's all POST /requests takes.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import random
+import os
 import sys
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from poolgen import generate  # noqa: E402
+
 ROUTES = ["COLLEGE_AIRPORT", "COLLEGE_STATION", "AIRPORT_COLLEGE", "STATION_COLLEGE"]
-CENTRE = 17 * 60  # 5:00 pm, minutes since midnight
-FLEX = [15, 30, 45, 60, 90]
 
 
 def make_requests(count: int, route: str, seed: int, first_id: int) -> list[tuple[str, dict]]:
@@ -26,8 +32,7 @@ def make_requests(count: int, route: str, seed: int, first_id: int) -> list[tupl
         # hand-picked so the three windows overlap: a triple leaving at 5:10 pm (1030)
         spec = [(1020, 30, 30), (1030, 20, 20), (1040, 15, 30)]
     else:
-        rng = random.Random(seed)
-        spec = [(CENTRE + 5 * rng.randint(-12, 12), rng.choice(FLEX), rng.choice(FLEX)) for _ in range(count)]
+        spec = [(r["p"], r["b"], r["a"]) for r in generate(count, route, seed, first_id=first_id)]
     return [
         (f"imt2022{first_id + i}@iiitb.ac.in", {"route": route, "p": p, "b": b, "a": a})
         for i, (p, b, a) in enumerate(spec)
