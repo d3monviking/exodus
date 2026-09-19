@@ -92,6 +92,7 @@ The `payload` keys are documented in `contracts.md` as *proposed*: the real `on_
 | `docker ps` errors about `~/.docker/desktop/docker.sock` | `docker context use default` |
 | `docker-credential-desktop: executable file not found` | remove the `"credsStore"` line from `~/.docker/config.json` |
 | `GET /board` returns 500 | LocalStack isn't up or the tables are missing: `docker compose up -d`, then `create_tables.py` |
+| Lambda errors with `No module named 'handlers'` | Docker can't see the project directory (snap Docker can't read outside your home directory, for example). Clone under your home directory |
 | Edited a handler and nothing changed | the API keeps containers warm; restart `scripts/start_api.sh` |
 | `sam: command not found` | `pipx install aws-sam-cli`, and put `~/.local/bin` on your `PATH` |
 | Countdown looks wrong | `RELEASE_INTERVAL_SECONDS` in `template.yaml` and the interval passed to `scheduler.sh` must match (both default to 120) |
