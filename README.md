@@ -1,0 +1,103 @@
+# Exodus
+
+End-of-semester cab clustering for IIITB. Students say when they want to leave and how much earlier or later they can manage. At scheduled releases a solver groups the whole open pool for a route into cabs of up to three, instead of matching people one at a time in a chat thread.
+
+Everything runs on one laptop with no AWS account: SAM CLI hosts the Lambda handlers, LocalStack provides DynamoDB, EventBridge and S3, Cedar answers every authorisation question, and a static page is the UI.
+
+> **Status:** the platform is complete through the decline loop and the release board. `solver.py` and `lifecycle.py` are **stubs** standing in for the real algorithm (see [The seam](#the-seam)), so grouping quality is not yet what the demo needs.
+
+## How it works
+
+1. A student signs in with an `@iiitb.ac.in` address, picks a route from fixed dropdowns, and gives a preferred departure time plus how much *earlier* and *later* they'll accept.
+2. A timer fires a **release**. For each route the solver partitions the whole pending pool into groups. Each group becomes a `FORMED` proposal with a departure time and an accept deadline.
+3. Every member accepts or declines. When all accept, the group is `CONFIRMED` and members see each other's contact. **One decline dissolves the whole group**, records why, and returns everyone to the pool.
+4. Silence past the deadline counts as a `TIMEOUT` decline. A student who keeps declining without changing anything sits out one release, so the loop always terminates.
+
+Members are anonymous until the cab is confirmed; a "not with this person" decline names someone by an opaque handle.
+
+## Prerequisites
+
+| Need | Notes |
+| --- | --- |
+| Docker with Compose v2 | your user must be able to run `docker` without sudo |
+| Python 3.12 | the handlers run on the 3.12 Lambda runtime |
+| AWS SAM CLI | `pipx install aws-sam-cli` (make sure `~/.local/bin` is on your `PATH`) |
+| Google Chrome | only for `scripts/ui_e2e.py` |
+
+## Run it
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+
+docker compose up -d                    # LocalStack: DynamoDB, EventBridge, S3
+.venv/bin/python create_tables.py       # tables + audit bucket; re-run any time to reset
+
+scripts/start_api.sh                    # terminal 1: API on http://127.0.0.1:3000
+python3 -m http.server 8080 --directory web   # terminal 2: UI on http://127.0.0.1:8080
+scripts/scheduler.sh                    # terminal 3 (optional): release every 120s, sweep every 30s
+```
+
+LocalStack keeps state in memory, so **re-run `create_tables.py` whenever the container is recreated.**
+
+## Try it
+
+```bash
+scripts/seed.py                         # three students on COLLEGE_AIRPORT
+scripts/release.sh --force              # fire a release now instead of waiting
+```
+
+Open http://127.0.0.1:8080 and sign in as `imt2022101@iiitb.ac.in`, then `imt2022102@…` and `imt2022103@…` in separate browser profiles or private windows (each keeps its own sign-in). You'll see a proposed group at 5:10 pm. Decline one of them with "not with one of these people" and watch the others get told their group dissolved. Fire another release and the block is respected.
+
+`scripts/seed.py --count 40 --seed 3` makes a larger random pool. `scripts/show_pool.py` prints each request exactly as the solver receives it.
+
+## Tests
+
+```bash
+.venv/bin/python -m pytest tests        # unit tests; no containers needed
+scripts/gate2.py                        # decline loop end to end over HTTP
+.venv/bin/python scripts/ui_e2e.py      # the board in real Chrome, several sessions
+```
+
+`gate2.py` and `ui_e2e.py` need the stack running and **empty tables** (`create_tables.py` first).
+
+## Layout
+
+| Path | What it is |
+| --- | --- |
+| `handlers/` | Lambda handlers: `submit_request`, `get_my_request`, `get_board`, `respond`, `release_orchestrator`, `lifecycle_sweep`; `_decline.py` is the one path every decline takes |
+| `policies.cedar`, `cedar_authz.py` | the four policies, and `is_permitted()`, the only code that talks to Cedar (fails closed) |
+| `repo.py`, `repo_dynamo.py` | the data layer: a JSON-file `FakeRepo` and the real `DynamoRepo`, one interface |
+| `solver.py`, `lifecycle.py` | **stubs** for the grouping algorithm and decline logic |
+| `explain_templated.py` | templated stand-in for the explanation agent |
+| `config.py` | every tuning constant and enum; nothing else hardcodes one |
+| `template.yaml`, `docker-compose.yml`, `create_tables.py` | infrastructure |
+| `web/index.html` | the whole UI: one static file, no build step |
+| `scripts/` | `start_api.sh`, `scheduler.sh`, `seed.py`, `release.sh`, `show_pool.py`, `gate2.py`, `ui_e2e.py` |
+
+## The seam
+
+The solver side and the platform side meet only at [`contracts.md`](contracts.md):
+
+- Every time crossing the seam is an **integer of minutes since midnight** (5:20 pm is `1040`). Conversion to clock time happens once, in `web/index.html`.
+- `solve(requests, config)` is pure: plain dicts in, plain dicts out, no I/O.
+- `on_decline(request, reason, payload)` returns a **state delta**; the platform persists whatever keys it contains and never interprets a reason.
+
+The `payload` keys are documented in `contracts.md` as *proposed*: the real `on_decline` has to agree to them.
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| `docker ps` errors about `~/.docker/desktop/docker.sock` | `docker context use default` |
+| `docker-credential-desktop: executable file not found` | remove the `"credsStore"` line from `~/.docker/config.json` |
+| `GET /board` returns 500 | LocalStack isn't up or the tables are missing: `docker compose up -d`, then `create_tables.py` |
+| Edited a handler and nothing changed | the API keeps containers warm; restart `scripts/start_api.sh` |
+| `sam: command not found` | `pipx install aws-sam-cli`, and put `~/.local/bin` on your `PATH` |
+| Countdown looks wrong | `RELEASE_INTERVAL_SECONDS` in `template.yaml` and the interval passed to `scheduler.sh` must match (both default to 120) |
+
+## Limitations
+
+- **Sign-in is not real.** Identity is the unverified `X-Student-Email` header, so anyone who can reach the API can act as any `@iiitb.ac.in` student. `start_api.sh` binds `127.0.0.1` only for this reason. Don't expose it.
+- **Releases come from a timer loop**, not EventBridge. LocalStack can fire schedules, but it can't invoke a function hosted by `sam local start-api`. The handlers accept both event shapes, so nothing changes if they're deployed to AWS later.
+- **The board's "last release" figure** is the most recent release on the route, so it can drop after a later, smaller one.
