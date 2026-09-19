@@ -44,6 +44,17 @@ def _clean_numbers(item: dict) -> dict:
     return item
 
 
+def _to_native(obj):
+    """Recursively turn Decimal into int (or float if fractional), for JSON-safe output."""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == obj.to_integral_value() else float(obj)
+    if isinstance(obj, dict):
+        return {k: _to_native(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_native(v) for v in obj]
+    return obj
+
+
 class DynamoRepo(Repo):
     def __init__(self):
         self._ddb = boto3.resource(
@@ -94,14 +105,15 @@ class DynamoRepo(Repo):
             Limit=1,
         )
         items = resp.get("Items", [])
-        return _clean_numbers(items[0]) if items else None
+        return _to_native(items[0]) if items else None
 
     def group_for(self, student_id: str) -> dict | None:
         req = self.requests.get_item(Key={"student_id": student_id}).get("Item")
         gid = (req or {}).get("current_group_id")
         if not gid:
             return None
-        return self.groups.get_item(Key={"group_id": gid}).get("Item")
+        group = self.groups.get_item(Key={"group_id": gid}).get("Item")
+        return _to_native(group) if group else None
 
     def config(self) -> dict:
         return CONFIG

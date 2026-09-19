@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exodus</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1b1f24; --muted: #5d6673;
+    --line: #dde1e7; --accent: #1f5eff; --accent-ink: #ffffff;
+    --ok: #12703a; --warn: #9a5b00; --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151a; --card: #1b2028; --ink: #e8ebf0; --muted: #9aa4b2;
+      --line: #2c3440; --accent: #6b93ff; --accent-ink: #0d1117;
+      --ok: #59c98a; --warn: #e5a94b; --bad: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  .tag { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 1rem; margin: 0 0 12px; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin: 12px 0 4px; }
+  select, input[type=email] { width: 100%; padding: 10px; font: inherit; color: var(--ink);
+          background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+  .row { display: flex; gap: 12px; } .row > * { flex: 1; }
+  button { font: inherit; padding: 11px 16px; border: 0; border-radius: 8px; cursor: pointer;
+           background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button.secondary { background: transparent; color: var(--muted); border: 1px solid var(--line); font-weight: 400; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .actions { display: flex; gap: 8px; margin-top: 16px; }
+  .window { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--bg);
+            color: var(--muted); font-size: .9rem; }
+  .msg { margin-top: 12px; font-size: .9rem; min-height: 1.3em; }
+  .msg.err { color: var(--bad); } .msg.ok { color: var(--ok); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+  dt { color: var(--muted); } dd { margin: 0; }
+  .pill { display: inline-block; padding: 1px 10px; border-radius: 99px; font-size: .8rem;
+          border: 1px solid var(--line); }
+  @media (max-width: 480px) { .row.stack { flex-direction: column; gap: 0; } }
+  .hidden { display: none; }
+  .board { color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Exodus</h1>
+  <p class="tag">End-of-semester cab clustering. Tell us when you want to leave and how flexible you are.</p>
+
+  <section class="card" id="signin">
+    <h2>Sign in</h2>
+    <label for="email">IIITB email</label>
+    <input id="email" type="email" autocomplete="email" placeholder="you@iiitb.ac.in">
+    <div class="actions"><button id="signin-btn" type="button">Continue</button></div>
+    <div class="msg" id="signin-msg" role="status"></div>
+  </section>
+
+  <section class="card hidden" id="form-card">
+    <h2>Your trip</h2>
+    <div class="row stack">
+      <div><label for="src">From</label><select id="src"></select></div>
+      <div><label for="dst">To</label><select id="dst"></select></div>
+    </div>
+    <label>Preferred departure</label>
+    <div class="row">
+      <select id="hour" aria-label="Hour"></select>
+      <select id="minute" aria-label="Minute"></select>
+    </div>
+    <div class="row">
+      <div><label for="early">Can leave earlier by</label><select id="early"></select></div>
+      <div><label for="late">Can leave later by</label><select id="late"></select></div>
+    </div>
+    <div class="window" id="window"></div>
+    <div class="actions">
+      <button id="submit" type="button">Join the pool</button>
+      <button id="signout" type="button" class="secondary">Sign out</button>
+    </div>
+    <div class="msg" id="submit-msg" role="status" aria-live="polite"></div>
+  </section>
+
+  <section class="card hidden" id="status-card">
+    <h2>Your request</h2>
+    <dl id="status"></dl>
+    <div id="proposal"></div>
+  </section>
+
+  <p class="board" id="board"></p>
+</main>
+
+<script>
+"use strict";
+
+// API base: override with ?api=http://host:port
+const API = new URLSearchParams(location.search).get("api") || "http://127.0.0.1:3000";
+
+// Mirrors ROUTES in config.py -- keep in sync.
+const LOCATIONS = { COLLEGE: "College", AIRPORT: "Kempegowda International Airport", STATION: "City railway station" };
+const DESTINATIONS = { COLLEGE: ["AIRPORT", "STATION"], AIRPORT: ["COLLEGE"], STATION: ["COLLEGE"] };
+
+// ---- time boundary: the ONLY place clock time <-> integer minutes converts ----
+const toMinutes = (hour, minute) => hour * 60 + minute;
+const fromMinutes = (m) => {
+  const h = Math.floor(m / 60) % 24, mm = m % 60;
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(mm).padStart(2, "0")} ${h < 12 ? "am" : "pm"}`;
+};
+// ------------------------------------------------------------------------------
+
+const $ = (id) => document.getElementById(id);
+const store = {
+  get() { try { return localStorage.getItem("exodus.email"); } catch { return null; } },
+  set(v) { try { localStorage.setItem("exodus.email", v); } catch {} },
+  clear() { try { localStorage.removeItem("exodus.email"); } catch {} },
+};
+let email = null, pollTimer = null, boardOffset = 0, nextReleaseAt = null;
+
+function fill(select, options, selected) {
+  select.replaceChildren(...options.map(([value, label]) => {
+    const o = document.createElement("option");
+    o.value = String(value); o.textContent = label;
+    if (String(value) === String(selected)) o.selected = true;
+    return o;
+  }));
+}
+
+function buildForm() {
+  fill($("src"), Object.entries(LOCATIONS).filter(([k]) => k in DESTINATIONS), "COLLEGE");
+  refreshDestinations();
+  fill($("hour"), [...Array(24).keys()].map((h) => [h, fromMinutes(h * 60).replace(":00", "")]), 17);
+  fill($("minute"), [...Array(12).keys()].map((i) => [i * 5, String(i * 5).padStart(2, "0")]), 0);
+  const flex = [...Array(36).keys()].map((i) => [(i + 1) * 5, `${(i + 1) * 5} min`]);
+  fill($("early"), flex, 30);
+  fill($("late"), flex, 30);
+  updateWindow();
+}
+
+function refreshDestinations() {
+  const opts = DESTINATIONS[$("src").value].map((k) => [k, LOCATIONS[k]]);
+  fill($("dst"), opts, opts[0][0]);
+}
+
+function currentValues() {
+  return {
+    route: `${$("src").value}_${$("dst").value}`,
+    p: toMinutes(Number($("hour").value), Number($("minute").value)),
+    b: Number($("early").value),
+    a: Number($("late").value),
+  };
+}
+
+function updateWindow() {
+  const { p, b, a } = currentValues();
+  $("window").textContent =
+    `You'd accept any time from ${fromMinutes(p - b + 1440)} to ${fromMinutes(p + a)}, ideally ${fromMinutes(p)}.`;
+}
+
+async function api(path, options = {}) {
+  const res = await fetch(API + path, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(email ? { "X-Student-Email": email } : {}) },
+  });
+  let body = null;
+  try { body = await res.json(); } catch {}
+  return { ok: res.ok, status: res.status, body };
+}
+
+function say(id, text, kind) {
+  const el = $(id); el.textContent = text; el.className = "msg" + (kind ? " " + kind : "");
+}
+
+async function submit() {
+  $("submit").disabled = true;
+  say("submit-msg", "");
+  try {
+    const { ok, body } = await api("/requests", { method: "POST", body: JSON.stringify(currentValues()) });
+    if (ok) { say("submit-msg", "You're in the pool. You'll be grouped at the next release.", "ok"); poll(); }
+    else say("submit-msg", (body && body.error) || "Something went wrong.", "err");
+  } catch { say("submit-msg", "Can't reach the server. Is the API running?", "err"); }
+  $("submit").disabled = false;
+}
+
+function row(dl, term, value) {
+  const dt = document.createElement("dt"), dd = document.createElement("dd");
+  dt.textContent = term; dd.append(value);
+  dl.append(dt, dd);
+}
+
+function render(data) {
+  const card = $("status-card");
+  if (!data.request) { card.classList.add("hidden"); return; }
+  card.classList.remove("hidden");
+  const r = data.request, dl = $("status");
+  dl.replaceChildren();
+  const [src, dst] = r.route.split("_");
+  row(dl, "Route", `${LOCATIONS[src]} → ${LOCATIONS[dst]}`);
+  row(dl, "Preferred", `${fromMinutes(r.p)} (${r.b} min earlier / ${r.a} min later)`);
+  const pill = document.createElement("span"); pill.className = "pill"; pill.textContent = r.status;
+  row(dl, "Status", pill);
+
+  const box = $("proposal"); box.replaceChildren();
+  const p = data.proposal;
+  if (p) {
+    const h = document.createElement("h2"); h.style.marginTop = "16px";
+    h.textContent = p.state === "CONFIRMED" ? "Your cab is confirmed" : "Proposed group";
+    const pdl = document.createElement("dl");
+    row(pdl, "Departs", fromMinutes(p.departure_time));
+    row(pdl, "Group size", String(p.size));
+    if (p.explanation) row(pdl, "Why", p.explanation);
+    if (p.contacts) row(pdl, "Travelling with", p.contacts.join(", "));
+    box.append(h, pdl);
+  }
+}
+
+async function poll() {
+  if (!email) return;
+  try {
+    const { ok, body } = await api("/requests/me");
+    if (ok) render(body);
+    const board = await api("/board");
+    if (board.ok) {
+      boardOffset = board.body.server_time - Math.floor(Date.now() / 1000);
+      nextReleaseAt = board.body.next_release_at;
+    }
+  } catch { /* transient; next tick retries */ }
+}
+
+function tickBoard() {
+  if (!nextReleaseAt) { $("board").textContent = "No release has run yet."; return; }
+  const left = nextReleaseAt - (Math.floor(Date.now() / 1000) + boardOffset);
+  $("board").textContent = left > 0
+    ? `Next release in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`
+    : "A release is due any moment.";
+}
+
+function enter(addr) {
+  email = addr;
+  $("signin").classList.add("hidden");
+  $("form-card").classList.remove("hidden");
+  buildForm();
+  poll();
+  pollTimer = setInterval(poll, 3000);
+}
+
+$("signin-btn").addEventListener("click", () => {
+  const v = $("email").value.trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) return say("signin-msg", "Enter a valid email address.", "err");
+  store.set(v); enter(v);
+});
+$("signout").addEventListener("click", () => {
+  clearInterval(pollTimer); store.clear(); email = null;
+  $("form-card").classList.add("hidden"); $("status-card").classList.add("hidden");
+  $("signin").classList.remove("hidden");
+});
+["src", "dst", "hour", "minute", "early", "late"].forEach((id) =>
+  $(id).addEventListener("change", () => { if (id === "src") refreshDestinations(); updateWindow(); }));
+$("submit").addEventListener("click", submit);
+
+setInterval(tickBoard, 1000);
+const saved = store.get();
+if (saved) enter(saved);
+</script>
+</body>
+</html>

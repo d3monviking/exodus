@@ -3,6 +3,11 @@ Transform: AWS::Serverless-2016-10-31
 Description: Exodus — cab-cluster coordinator (local, Build It track)
 
 Globals:
+  Api:
+    Cors:
+      AllowOrigin: "'*'"
+      AllowHeaders: "'Content-Type,X-Student-Email'"
+      AllowMethods: "'GET,POST,OPTIONS'"
   Function:
     Runtime: python3.12
     Timeout: 15
@@ -17,6 +22,7 @@ Globals:
         BLOCKS_TABLE: Blocks
         RELEASES_TABLE: Releases
         RELEASE_LOG_BUCKET: exodus-release-log
+        RELEASE_INTERVAL_SECONDS: "120"
 
 Resources:
   SubmitRequestFunction:

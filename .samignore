@@ -7,3 +7,5 @@ arch/
 __pycache__/
 *.pyc
 web/
+tests/
+requirements-dev.txt
