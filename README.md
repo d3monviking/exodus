@@ -49,8 +49,10 @@ LocalStack keeps state in memory, so **re-run `create_tables.py` whenever the co
 
 ```bash
 scripts/seed.py                         # three students on COLLEGE_AIRPORT
-scripts/release.sh --force              # fire a release now instead of waiting
+scripts/release.sh --force              # fire a release now instead of waiting (--quiet: one summary line)
 ```
+
+For recording a demo: `scripts/demo_reset.sh` resets the tables, seeds the 40-student pool, stops any scheduler, and checks that the demo will behave before it says `READY`. Open the page with `?demo=1` to get a **Run a release now** button in the Release board and a form that opens on 7 pm ±15. The shot-by-shot script is in `arch/demo-script.md`.
 
 Ask for advice before a release, while the pool is still open:
 
