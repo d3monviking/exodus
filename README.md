@@ -124,6 +124,7 @@ The grouping logic and the platform meet only at [`contracts.md`](contracts.md),
 | Lambda errors with `No module named 'handlers'` | Docker can't see the project directory (snap Docker can't read outside your home directory, for example). Clone under your home directory |
 | Edited a handler and nothing changed | the API keeps containers warm; restart `scripts/start_api.sh` |
 | `sam: command not found` | `pipx install aws-sam-cli`, and put `~/.local/bin` on your `PATH` |
+| A test script fails oddly, or students get regrouped mid-test | `scripts/scheduler.sh` is running and firing releases underneath it. Stop it while running `gate2.py`, `e2e.py` or `ui_e2e.py` |
 | Port 8080 is already taken | serve the page anywhere else (`python3 -m http.server 8090 --directory web`) and point the browser test at it: `EXODUS_WEB=http://127.0.0.1:8090/ scripts/ui_e2e.py` |
 | Countdown looks wrong | `RELEASE_INTERVAL_SECONDS` in `template.yaml` and the interval passed to `scheduler.sh` must match (both default to 120) |
 

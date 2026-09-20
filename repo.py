@@ -208,6 +208,8 @@ class FakeRepo(Repo):
                 if req is not None and req.get("current_group_id") == group_id:
                     req["status"] = "PENDING"
                     req["current_group_id"] = None
+                    # so GET /requests/me can say why the cab fell through
+                    req["last_group_id"] = group_id
             self._write(data)
 
     def add_block(self, student_a: str, student_b: str, reason: str) -> None:

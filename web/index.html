@@ -105,7 +105,11 @@
       <div><label for="late">Can leave later by</label><select id="late"></select></div>
     </div>
     <div class="window" id="window"></div>
-    <div class="actions"><button id="submit" type="button">Join the pool</button></div>
+    <div class="actions">
+      <button id="submit" type="button">Join the pool</button>
+      <button id="advise" class="secondary" type="button">Check my chances</button>
+    </div>
+    <div class="msg" id="advice" role="status" aria-live="polite"></div>
     <div class="msg" id="submit-msg" role="status" aria-live="polite"></div>
   </section>
 
@@ -251,6 +255,19 @@ async function submit() {
   $("submit").disabled = false;
 }
 
+// What this window is likely to get you, before you commit to it. The answer
+// comes from the real solver run on the pool as it stands, so it is an
+// estimate of the next release, not a promise.
+async function checkChances() {
+  $("advise").disabled = true;
+  say("advice", "Running the solver on the current pool\u2026");
+  try {
+    const { ok, body } = await api("/advise", { method: "POST", body: JSON.stringify(currentValues()) });
+    say("advice", ok ? body.message : (body && body.error) || "Something went wrong.", ok ? "" : "err");
+  } catch { say("advice", "Can't reach the server. Is the API running?", "err"); }
+  $("advise").disabled = false;
+}
+
 // ------------------------------------------------------------- status card
 
 function row(dl, term, value) {
@@ -296,13 +313,25 @@ function render(next) {
   renderBoard();
 }
 
+// A cab falls through when someone declines or nobody answers in time. Say
+// which, and that the next release will try again: a dissolved group is not
+// the end of the road, and a student who doesn't know that just leaves.
+function dissolveMessage(outcome) {
+  const back = "You're back in the pool, and the next release will group you again.";
+  if (!outcome) return `Your cab was called off. ${back}`;
+  if (outcome.cause === "you_declined") return `You declined that cab. ${back}`;
+  if (outcome.cause === "timeout") return `Nobody answered in time, so that cab was called off. ${back}`;
+  const who = outcome.who ? (outcome.who.name || outcome.who.student_id) : "Someone";
+  return `${who} backed out, so that cab was called off. ${back}`;
+}
+
 function detectTransitions(prev, next) {
   const had = prev.proposal && prev.proposal.state === "FORMED";
   const has = next.proposal && next.proposal.state === "FORMED";
   if (has && (!had || prev.proposal.group_id !== next.proposal.group_id)) {
     notify("You've been grouped. Review the proposal and respond before the deadline.", "ok", true);
   } else if (had && !next.proposal && next.request && next.request.status === "PENDING" && !suppressDissolveNotice) {
-    notify("Your group was dissolved: someone declined or the deadline passed. You're back in the pool for the next release.", "warn");
+    notify(dissolveMessage(next.last_outcome), "warn");
   }
   const status = (d) => d.request && d.request.status;
   if (status(next) === "CONFIRMED" && status(prev) !== "CONFIRMED") notify("Your cab is confirmed.", "ok", true);
@@ -425,7 +454,7 @@ async function respond(body) {
       suppressDissolveNotice = true;
       notify(body.reason === "PLANS_CHANGED"
         ? "Your request was removed."
-        : "You declined. The group was dissolved and you're back in the pool for the next release.", "warn");
+        : dissolveMessage({ cause: "you_declined" }), "warn");
     }
     lastKey = null;
     await poll();
@@ -529,6 +558,7 @@ $("signout").addEventListener("click", leave);
 ["src", "dst", "hour", "minute", "early", "late"].forEach((id) =>
   $(id).addEventListener("change", () => { if (id === "src") refreshDestinations(); updateWindow(); renderBoard(); }));
 $("submit").addEventListener("click", submit);
+$("advise").addEventListener("click", checkChances);
 
 setInterval(() => { tickBoard(); tickDeadline(); }, 1000);
 const saved = store.get();

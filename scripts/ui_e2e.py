@@ -7,7 +7,7 @@ each polling the real API like a real user.
      the others are told their group dissolved; the next release pairs two of
      them; both accept and see the confirmed cab and each other's contact.
   B. widen-my-window decline updates the request; a plans-changed decline
-     withdraws it.
+     withdraws it, and "check my chances" answers from the real solver.
 
 Needs the full stack (LocalStack + sam local on :3000 + `python3 -m http.server
 8080 --directory web`), empty tables, and dev deps (playwright; uses system Chrome).
@@ -54,6 +54,19 @@ def seed(route, first_id):
         post(API, email, body)
 
 
+def wait_for_notice(page, text, timeout=15000):
+    """Wait for the banner to say something, and on failure say what it said instead."""
+    try:
+        page.wait_for_function(f"document.getElementById('notice').textContent.includes({text!r})", timeout=timeout)
+        return True
+    except Exception:
+        print(f"       notice was: {page.eval_on_selector('#notice', 'e => e.textContent')!r}; "
+              f"status={page.inner_text('#status')[-40:]!r}; "
+              f"proposal_shown={page.locator('#proposal .proposal').count()}; "
+              f"hidden={page.is_hidden('#status-card')}")
+        return False
+
+
 def shot(page, name):
     if SHOTS:
         page.screenshot(path=os.path.join(SHOTS, name), full_page=True)
@@ -75,7 +88,9 @@ def main() -> int:
             return page
 
         def notice(page):
-            return page.inner_text("#notice")
+            # textContent, not inner_text: the banner hides itself after 20s and
+            # inner_text reports "" for anything hidden
+            return page.eval_on_selector("#notice", "e => e.textContent")
 
         print("A. decline -> dissolve -> re-release -> confirm")
         seed("COLLEGE_AIRPORT", 101)
@@ -115,9 +130,12 @@ def main() -> int:
                              "document.getElementById('status').textContent.includes('PENDING')", timeout=15000)
         check("decliner sees a confirmation and is PENDING again",
               "PENDING" in p1.inner_text("#status") and not p1.is_hidden("#form-card"))
-        for pg in (p2, p3):
-            pg.wait_for_function("document.getElementById('notice').textContent.includes('dissolved')", timeout=15000)
-        check("the other two are told their group dissolved", all("dissolved" in notice(pg) for pg in (p2, p3)))
+        told = [wait_for_notice(pg, "called off") for pg in (p2, p3)]
+        check("both non-decliners are told the cab fell through", all(told))
+        check("the other two are told who backed out and that they'll be grouped again",
+              all(name_for("imt2022101") in notice(pg) and "backed out" in notice(pg)
+                  and "next release will group you again" in notice(pg) for pg in (p2, p3)), notice(p2))
+        check("the decliner is told it was them", "You declined that cab" in notice(p1), notice(p1))
 
         release()
         for pg in (p1, p2):
@@ -162,6 +180,15 @@ def main() -> int:
                             "document.getElementById('status-card').classList.contains('hidden')", timeout=15000)
         check("plans-changed removes the request and offers the form again",
               q.is_hidden("#status-card") and not q.is_hidden("#form-card") and q.inner_text("#submit") == "Join the pool")
+
+        # the form is back, so ask what a window would get you before submitting again
+        q.click("#advise")
+        q.wait_for_function("document.getElementById('advice').textContent.length > 0 && "
+                            "!document.getElementById('advice').textContent.includes('Running the solver')", timeout=30000)
+        advice = q.inner_text("#advice")
+        check("check-my-chances answers from the current pool", "students are waiting on this route" in advice, advice)
+        check("...and says what this window would get you", "minutes earlier and" in advice, advice)
+        shot(q, "advice.png")
 
         check("no JavaScript errors anywhere", not errors, str(errors))
         check("no failed API calls (4xx/5xx) during the whole run", not bad_http, str(bad_http))

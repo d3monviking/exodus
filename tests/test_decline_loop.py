@@ -214,3 +214,45 @@ def test_the_proposal_names_the_other_members(repo, grouped):
     assert p["accepted"] == 0
     call("imt2022002", grouped, {"action": "accept"})
     assert json.loads(get_my_request.handler(ev, None)["body"])["proposal"]["accepted"] == 1
+
+
+# ---- what the page is told after a cab falls through ----
+
+def me(sid):
+    ev = {"headers": {"X-Student-Email": EMAIL[sid]}}
+    return json.loads(get_my_request.handler(ev, None)["body"])
+
+
+def test_the_others_are_told_who_backed_out(repo, grouped):
+    call("imt2022001", grouped, {"action": "decline", "reason": "TOO_FEW"})
+    import roster
+    out = me("imt2022002")["last_outcome"]
+    assert out["cause"] == "declined"
+    assert out["who"] == {"student_id": "imt2022001", "name": roster.name_for("imt2022001")}
+    assert out["group_id"] == grouped
+
+
+def test_the_decliner_is_told_it_was_them(repo, grouped):
+    call("imt2022001", grouped, {"action": "decline", "reason": "TOO_FEW"})
+    assert me("imt2022001")["last_outcome"]["cause"] == "you_declined"
+    assert me("imt2022001")["last_outcome"]["who"] is None
+
+
+def test_silence_reads_as_a_timeout_not_a_decline(repo, grouped, monkeypatch):
+    monkeypatch.setattr(lifecycle_sweep.time, "time", lambda: DEADLINE + 1)
+    lifecycle_sweep.sweep(repo, DEADLINE + 1)
+    for sid in ("imt2022001", "imt2022002", "imt2022003"):
+        assert me(sid)["last_outcome"]["cause"] == "timeout"
+        assert me(sid)["last_outcome"]["who"] is None
+
+
+def test_no_outcome_while_a_live_proposal_stands(repo, grouped):
+    assert me("imt2022001")["proposal"]["state"] == "FORMED"
+    assert me("imt2022001")["last_outcome"] is None
+
+
+def test_the_reason_someone_gave_is_never_exposed(repo, grouped):
+    call("imt2022001", grouped,
+         {"action": "decline", "reason": "PERSON", "payload": {"named_student_id": "imt2022002"}})
+    body = json.dumps(me("imt2022002"))
+    assert "PERSON" not in body and "reason" not in body

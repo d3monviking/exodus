@@ -254,9 +254,10 @@ class DynamoRepo(Repo):
             if req is not None and req.get("current_group_id") == group_id:
                 self.requests.update_item(
                     Key={"student_id": member},
-                    UpdateExpression="SET #s = :s REMOVE current_group_id",
+                    # last_group_id: so GET /requests/me can say why the cab fell through
+                    UpdateExpression="SET #s = :s, last_group_id = :g REMOVE current_group_id",
                     ExpressionAttributeNames={"#s": "status"},
-                    ExpressionAttributeValues={":s": "PENDING"},
+                    ExpressionAttributeValues={":s": "PENDING", ":g": group_id},
                 )
 
     def add_block(self, student_a: str, student_b: str, reason: str) -> None:
