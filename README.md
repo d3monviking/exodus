@@ -4,7 +4,6 @@ End-of-semester cab clustering for IIITB. Students say when they want to leave a
 
 Everything runs on one laptop with no AWS account: SAM CLI hosts the Lambda handlers, LocalStack provides DynamoDB, EventBridge and S3, Cedar answers every authorisation question, and a static page is the UI.
 
-> **Status:** the backend is complete and tested end to end — the real grouping solver, the decline lifecycle, explanations, advice, and all four routes. What's left is the look of the UI.
 
 ## How it works
 
@@ -136,14 +135,3 @@ The grouping logic and the platform meet only at [`contracts.md`](contracts.md),
 | Port 8080 is already taken | serve the page anywhere else (`python3 -m http.server 8090 --directory web`) and point the browser test at it: `EXODUS_WEB=http://127.0.0.1:8090/ scripts/ui_e2e.py` |
 | Countdown looks wrong | `RELEASE_INTERVAL_SECONDS` in `template.yaml` and the interval passed to `scheduler.sh` must match (both default to 120) |
 
-## Limitations
-
-- **Sign-in is not real.** Identity is the unverified `X-Student-Email` header: the address must be an IIITB roll number (`imt|mt|ms|phd` + 7 digits) at `iiitb.ac.in`, but nothing proves it is yours, so anyone who can reach the API can act as any student. `start_api.sh` binds `127.0.0.1` only for this reason. Don't expose it.
-- **Releases come from a timer loop**, not EventBridge. LocalStack can fire schedules, but it can't invoke a function hosted by `sam local start-api`. The handlers accept both event shapes, so nothing changes if they're deployed to AWS later.
-- **The board's "last release" figure** is the most recent release on the route, so it can drop after a later, smaller one.
-- **The system has no travel date, so one is configured.** A departure is minutes since midnight and a release is a wall-clock time; deciding whether a pair leaves "6 hours after the next release" needs the day they're on. `schedule.py` measures against the day of the release unless `EXODUS_TRAVEL_DATE` (or `config["travel_date"]`) says otherwise, in the college's timezone (`tz_offset_minutes`, IST by default). Run after the pool's departure times without setting it and no pair has room for a third rider, which is correct but looks like the feature doing nothing.
-- **Filling a seat is a heuristic.** Seats are offered before the pool is solved, to the student with the smallest penalty at the pair's locked time, so a student who takes a seat is unavailable to the solver even if a better group existed for them. The pair have no veto over a third rider beyond their blocklists.
-- **Soft time anchors are not implemented.** A time-based decline records `(departure_time, group_size)` in `declined_anchors`, and the solver ignores it. Termination is guaranteed by the decline budget instead: two declines that change nothing and the student sits out a release.
-- **Advice reflects the pool as it is now.** After a release most requests are `GROUPED`, so `POST /advise` is only informative while a pool is still open, and it says so in its own answer.
-- **Contiguity is a heuristic.** The departure time is exactly optimal on the 5-minute grid, and the partition is exactly optimal over runs contiguous in each ordering the solver tries; with widely varying window shapes that can still miss the true optimum, measured at about 2% of random small pools (`solver.py` documents the numbers).
-- **No language model.** Explanations and advice are computed from the solver. A Strands-plus-Ollama version of both was built and measured, and cut: it added 15-25s per answer, needed a guard against invented numbers, and contributed no facts.
