@@ -34,6 +34,14 @@ def grouped(repo):
     return repo.group_for("imt2022001")["group_id"]
 
 
+@pytest.fixture
+def pair(repo):
+    """imt2022001 and imt2022002 released into one FORMED pair. A decline there dissolves it."""
+    add(repo, "imt2022001", 1020, 30, 30); add(repo, "imt2022002", 1030, 20, 20)
+    ro.run_release(repo, now=NOW)
+    return repo.group_for("imt2022001")["group_id"]
+
+
 def call(sid, group_id, body, headers=True):
     event = {"headers": {"X-Student-Email": EMAIL[sid]} if headers else {},
              "pathParameters": {"id": group_id}, "body": json.dumps(body)}
@@ -83,33 +91,40 @@ def test_no_identity_is_401(repo, grouped):
     assert call("imt2022001", grouped, {"action": "accept"}, headers=False)[0] == 401
 
 
-def test_late_and_stale_responses_are_409(repo, grouped, monkeypatch):
+def test_late_responses_are_409(repo, grouped, monkeypatch):
     monkeypatch.setattr(respond.time, "time", lambda: DEADLINE + 1)
     assert call("imt2022001", grouped, {"action": "accept"})[0] == 409
-    monkeypatch.setattr(respond.time, "time", lambda: NOW + 10)
-    call("imt2022001", grouped, {"action": "decline", "reason": "TOO_FEW"})
-    assert call("imt2022002", grouped, {"action": "accept"})[0] == 409  # already DISSOLVED
+
+
+def test_responding_to_a_dissolved_group_is_409(repo, pair):
+    call("imt2022001", pair, {"action": "decline", "reason": "TOO_FEW"})
+    assert call("imt2022002", pair, {"action": "accept"})[0] == 409  # already DISSOLVED
 
 
 # ---- declining: every reason, and that everyone returns to the pool ----
 
-def test_decline_dissolves_and_returns_everyone_to_the_pool(repo, grouped):
-    code, body = call("imt2022002", grouped, {"action": "decline", "reason": "TOO_FEW"})
-    assert (code, body) == (200, {"state": "DISSOLVED", "reason": "TOO_FEW"})
-    g = repo.get_group(grouped)
+def test_a_decline_in_a_pair_dissolves_it_and_returns_everyone_to_the_pool(repo, pair):
+    code, body = call("imt2022002", pair, {"action": "decline", "reason": "TOO_FEW"})
+    assert (code, body["state"], body["reason"]) == (200, "DISSOLVED", "TOO_FEW")
+    assert "next_release_at" in body
+    g = repo.get_group(pair)
     assert (g["state"], g["dissolved_reason"], g["declined_by"]) == ("DISSOLVED", "TOO_FEW", "imt2022002")
-    assert set(statuses(repo, "imt2022001", "imt2022002", "imt2022003").values()) == {"PENDING"}
-    assert all(repo.get_request(s).get("current_group_id") is None for s in ("imt2022001", "imt2022002", "imt2022003"))
+    assert set(statuses(repo, "imt2022001", "imt2022002").values()) == {"PENDING"}
+    assert all(repo.get_request(s).get("current_group_id") is None for s in ("imt2022001", "imt2022002"))
 
 
 def test_person_decline_blocks_the_named_member(repo, grouped):
     code, body = call("imt2022001", grouped,
                       {"action": "decline", "reason": "PERSON", "payload": {"named_student_id": "imt2022003"}})
-    assert code == 200 and body["state"] == "DISSOLVED"
+    assert code == 200 and body["state"] == "REDUCED"  # the other two carry on as a pair
     assert "imt2022003" in repo.get_request("imt2022001")["blocked_with"]
     assert repo.get_request("imt2022001")["decline_count"] == 0  # a block is a state change: no budget used
 
-    # the next release routes around it: they are never together again
+    # 003 would rather not be a pair either, so it dissolves and everyone is back in the pool
+    call("imt2022003", grouped, {"action": "decline", "reason": "TIME"})
+    assert repo.get_group(grouped)["state"] == "DISSOLVED"
+
+    # the next release routes around the block: they are never together again
     out = ro.run_release(repo, now=NOW + 60)["COLLEGE_AIRPORT"]
     for g in out["groups"]:
         assert not {"imt2022001", "imt2022003"} <= set(g["members"])
@@ -143,16 +158,23 @@ def test_too_few_sets_min_group_size(repo, grouped):
     assert repo.get_request("imt2022001")["min_group_size"] == 3
 
 
-def test_plans_changed_withdraws_the_request_but_frees_the_others(repo, grouped):
+def test_plans_changed_withdraws_the_request(repo, grouped):
     call("imt2022001", grouped, {"action": "decline", "reason": "PLANS_CHANGED"})
-    assert statuses(repo, "imt2022001", "imt2022002", "imt2022003") == {"imt2022001": None, "imt2022002": "PENDING", "imt2022003": "PENDING"}
+    # the others are not sent back to the pool: they are asked whether to carry on as a pair
+    assert statuses(repo, "imt2022001", "imt2022002", "imt2022003") == {
+        "imt2022001": None, "imt2022002": "GROUPED", "imt2022003": "GROUPED"}
+
+
+def test_plans_changed_in_a_pair_frees_the_other(repo, pair):
+    call("imt2022001", pair, {"action": "decline", "reason": "PLANS_CHANGED"})
+    assert statuses(repo, "imt2022001", "imt2022002") == {"imt2022001": None, "imt2022002": "PENDING"}
 
 
 # ---- termination: the decline budget ----
 
-def test_unchanged_declines_exhaust_the_budget_and_the_loop_ends(repo, grouped):
+def test_unchanged_declines_exhaust_the_budget_and_the_loop_ends(repo, pair):
     same = {"action": "decline", "reason": "TIME", "payload": {"b": 30, "a": 30}}
-    call("imt2022001", grouped, same)
+    call("imt2022001", pair, same)
     ro.run_release(repo, now=NOW + 60)
     call("imt2022001", repo.group_for("imt2022001")["group_id"], same)
     assert repo.get_request("imt2022001")["decline_count"] == 2
@@ -161,9 +183,11 @@ def test_unchanged_declines_exhaust_the_budget_and_the_loop_ends(repo, grouped):
     assert out["sat_out"] == ["imt2022001"] and repo.get_request("imt2022001")["status"] == "SAT_OUT"
     assert all("imt2022001" not in g["members"] for g in out["groups"])
 
-    out = ro.run_release(repo, now=NOW + 180)["COLLEGE_AIRPORT"]  # next release: s1 is back, budget reset
+    out = ro.run_release(repo, now=NOW + 180)["COLLEGE_AIRPORT"]  # next release: 001 is back, budget reset
     assert out["revived"] == ["imt2022001"]
-    assert (repo.get_request("imt2022001")["status"], repo.get_request("imt2022001")["decline_count"]) == ("PENDING", 0)
+    assert repo.get_request("imt2022001")["decline_count"] == 0
+    # revived at the start of the release, so it is grouped in it, not left waiting for the next
+    assert repo.group_for("imt2022001") is not None
 
 
 # ---- the sweep ----
@@ -223,17 +247,17 @@ def me(sid):
     return json.loads(get_my_request.handler(ev, None)["body"])
 
 
-def test_the_others_are_told_who_backed_out(repo, grouped):
-    call("imt2022001", grouped, {"action": "decline", "reason": "TOO_FEW"})
+def test_the_others_are_told_who_backed_out(repo, pair):
+    call("imt2022001", pair, {"action": "decline", "reason": "TOO_FEW"})
     import roster
     out = me("imt2022002")["last_outcome"]
     assert out["cause"] == "declined"
     assert out["who"] == {"student_id": "imt2022001", "name": roster.name_for("imt2022001")}
-    assert out["group_id"] == grouped
+    assert out["group_id"] == pair
 
 
-def test_the_decliner_is_told_it_was_them(repo, grouped):
-    call("imt2022001", grouped, {"action": "decline", "reason": "TOO_FEW"})
+def test_the_decliner_is_told_it_was_them(repo, pair):
+    call("imt2022001", pair, {"action": "decline", "reason": "TOO_FEW"})
     assert me("imt2022001")["last_outcome"]["cause"] == "you_declined"
     assert me("imt2022001")["last_outcome"]["who"] is None
 
@@ -251,8 +275,8 @@ def test_no_outcome_while_a_live_proposal_stands(repo, grouped):
     assert me("imt2022001")["last_outcome"] is None
 
 
-def test_the_reason_someone_gave_is_never_exposed(repo, grouped):
-    call("imt2022001", grouped,
+def test_the_reason_someone_gave_is_never_exposed(repo, pair):
+    call("imt2022001", pair,
          {"action": "decline", "reason": "PERSON", "payload": {"named_student_id": "imt2022002"}})
     body = json.dumps(me("imt2022002"))
     assert "PERSON" not in body and "reason" not in body

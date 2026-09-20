@@ -13,6 +13,16 @@ CONFIG = {
     "accept_window_minutes": 20,  # time to accept/decline a proposal
     "decline_budget": 2,        # no-state-change declines before sit-out
     "min_release_gap_seconds": 10,  # a route can't be released twice within this window
+
+    # A confirmed pair may still gain a third rider (schedule.py). The departure
+    # time never changes; only the seat is offered, at a later release.
+    "backfill_open_lead_minutes": 360,   # a pair stays open only if it leaves at least this long after the next release
+    "backfill_close_lead_minutes": 180,  # and a release may offer the seat only at least this long before departure
+
+    # Releases happen in wall-clock time, departures are minutes on the travel
+    # day (contracts.md), and nothing else links the two. These do.
+    "tz_offset_minutes": 330,       # the college's clock: IST is UTC+5:30
+    "travel_date": None,            # "YYYY-MM-DD" of the trip; None means the day of the release. EXODUS_TRAVEL_DATE overrides.
 }
 
 EMAIL_DOMAIN = "iiitb.ac.in"

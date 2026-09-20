@@ -3,8 +3,12 @@
 The whole backend end to end over HTTP, against LocalStack and the real solver.
 
 Covers what gate2.py doesn't: every decline reason, the decline budget and the
-sit-out, the deadline sweep, advice before a release, all four routes at once,
-and a 120-student pool checked against the solver run offline on the same pool.
+sit-out, the deadline sweep, a trio that loses a member and carries on as a
+pair, a confirmed pair gaining a third rider, advice before a release, all four
+routes at once, and a 120-student pool checked against the solver run offline.
+
+The third-seat scenario needs the API started with EXODUS_TRAVEL_DATE set to a
+day after today (and the same value exported here); without it, it is skipped.
 
 Start from empty tables (.venv/bin/python create_tables.py) and a running API.
 Needs boto3 for one thing only: backdating an accept deadline, so the sweep can
@@ -116,15 +120,17 @@ def backdate_deadline(group_id: str) -> None:
 # ---- scenarios ---------------------------------------------------------------
 
 def lifecycle_scenarios() -> None:
-    """Each decline reason, on its own cluster of a route so they can't mix.
+    """Each decline reason, on its own pair of students so the effects can't mix.
 
-    Windows are +-10 minutes and clusters are hours apart, so no student from
-    one scenario is ever feasible with another's.
+    A pair, because a decline there dissolves the group and puts everyone back
+    in the pool, which is what these check; a decline in a trio has its own
+    scenario below. Windows are +-10 minutes and clusters are hours apart, so
+    no student from one scenario is ever feasible with another's.
     """
     route = "STATION_COLLEGE"
-    trios = {"widen": (360, 1), "budget": (480, 11), "toofew": (600, 21), "plans": (720, 31)}
-    for name, (centre, first) in trios.items():
-        for i in range(3):
+    pairs = {"widen": (360, 1), "budget": (480, 11), "toofew": (600, 21), "plans": (720, 31)}
+    for name, (centre, first) in pairs.items():
+        for i in range(2):
             submit(f"imt2023{first + i:03d}", route, centre + 5 * i, 10, 10)
     release()
 
@@ -136,9 +142,9 @@ def lifecycle_scenarios() -> None:
     check("the window widened and never narrowed", (r["b"], r["a"]) == (60, 10), f"b={r['b']} a={r['a']}")
     check("no decline budget spent", r["decline_count"] == 0, str(r["decline_count"]))
     check("the declined time is remembered as an anchor",
-          r["declined_anchors"] == [{"T": g["departure_time"], "size": 3}], str(r["declined_anchors"]))
+          r["declined_anchors"] == [{"T": g["departure_time"], "size": 2}], str(r["declined_anchors"]))
     check("everyone is back in the pool",
-          all(mine(f"imt2023{1 + i:03d}")["request"]["status"] == "PENDING" for i in range(3)))
+          all(mine(f"imt2023{1 + i:03d}")["request"]["status"] == "PENDING" for i in range(2)))
 
     section("2. 'too few people': only full cabs from now on")
     g = group_of("imt2023021")
@@ -147,12 +153,11 @@ def lifecycle_scenarios() -> None:
     check("min_group_size is now a full cab", r["min_group_size"] == CONFIG["max_group"])
     check("no budget spent for a real change", r["decline_count"] == 0)
 
-    section("3. 'plans changed': the request is gone, the others are freed")
+    section("3. 'plans changed': the request is gone, the other is freed")
     g = group_of("imt2023031")
     respond("imt2023031", g["group_id"], "decline", "PLANS_CHANGED")
     check("the request is withdrawn", mine("imt2023031")["request"] is None)
-    check("the other two are pending again",
-          all(mine(f"imt2023{31 + i:03d}")["request"]["status"] == "PENDING" for i in (1, 2)))
+    check("the other is pending again", mine("imt2023032")["request"]["status"] == "PENDING")
 
     section("4. the decline budget: two no-change declines, then a release sat out")
     same = {"b": 10, "a": 10}  # exactly their current window: nothing changes
@@ -197,8 +202,120 @@ def timeout_sweep() -> None:
           all(mine(f"imt2023{41 + i:03d}")["request"]["status"] == "PENDING" for i in range(3)))
 
 
+def backdate_offer(group_id: str) -> None:
+    """Push an outstanding seat offer's deadline into the past, so the sweep expires it."""
+    os.environ.setdefault("EXODUS_REPO", "dynamo")
+    from repo_dynamo import DynamoRepo
+
+    DynamoRepo().groups.update_item(
+        Key={"group_id": group_id},
+        UpdateExpression="SET seat_offer.deadline = :t",
+        ExpressionAttributeValues={":t": int(time.time()) - 60},
+    )
+
+
+def trio_becomes_a_pair() -> None:
+    section("6. a decline in a trio: the other two are asked whether to carry on as a pair")
+    route = "STATION_COLLEGE"
+    for i, sid in enumerate(("imt2025101", "imt2025102", "imt2025103")):
+        submit(sid, route, 780 + 5 * i, 30, 30)
+    release()
+    g = group_of("imt2025101")
+    check("a trio formed", g is not None and g["size"] == 3, str(g))
+    respond("imt2025102", g["group_id"], "accept")  # agreed to a trio; must not carry over
+
+    code, body = respond("imt2025101", g["group_id"], "decline", "TIME", {"b": 30, "a": 30})
+    check("the cab carries on without them", code == 200 and body["state"] == "REDUCED", str(body))
+    check("the decliner is told when the next release is", bool(body.get("next_release_at")), str(body))
+    check("the decliner is back in the pool",
+          mine("imt2025101")["request"]["status"] == "PENDING" and group_of("imt2025101") is None)
+    check("...having spent decline budget, since nothing about their request changed",
+          mine("imt2025101")["request"]["decline_count"] == 1)
+
+    asked = [group_of(s) for s in ("imt2025102", "imt2025103")]
+    check("the other two are asked to stay or split, at the same departure time",
+          all(q and q["reduced"] and q["size"] == 2 and q["departure_time"] == g["departure_time"]
+              and q["left_by"]["student_id"] == "imt2025101" for q in asked), json.dumps(asked))
+    check("...and the explanation is about a pair", "2 ways" in asked[0]["explanation"], asked[0]["explanation"])
+    check("an accept for the trio does not carry over", asked[0]["my_response"] is None, str(asked[0]))
+
+    code, body = respond("imt2025103", g["group_id"], "decline", "TIME")
+    check("either one splitting dissolves the pair", code == 200 and body["state"] == "DISSOLVED", str(body))
+    check("both go back to the pool",
+          all(mine(s)["request"]["status"] == "PENDING" for s in ("imt2025102", "imt2025103")))
+    told = mine("imt2025102")["last_outcome"]
+    check("the one who wanted to stay is told who backed out",
+          told and told["cause"] == "declined" and told["who"]["student_id"] == "imt2025103", json.dumps(told))
+    check("the one who left earlier is not told about a cab they'd already left",
+          mine("imt2025101")["last_outcome"] is None)
+
+
+def third_seat() -> None:
+    section("7. a confirmed pair gains a third rider, at the pair's departure time")
+    if not os.environ.get("EXODUS_TRAVEL_DATE"):
+        print("  SKIP  a departure is only 'far enough away' relative to the travel day. Start the API with\n"
+              "        EXODUS_TRAVEL_DATE=<tomorrow> scripts/start_api.sh and export the same here to run this.")
+        return
+    route = "STATION_COLLEGE"
+    for i, sid in enumerate(("imt2025201", "imt2025202", "imt2025203")):
+        submit(sid, route, 900 + 5 * i, 30, 30)
+    release()
+    g = group_of("imt2025201")
+    check("a trio formed", g is not None and g["size"] == 3, str(g))
+    gid, T = g["group_id"], g["departure_time"]
+
+    respond("imt2025201", gid, "decline", "TIME", {"b": 30, "a": 30})
+    respond("imt2025202", gid, "accept")
+    code, body = respond("imt2025203", gid, "accept")
+    check("both staying confirms the pair", body.get("state") == "CONFIRMED", str(body))
+    pair = group_of("imt2025202")
+    check("the pair's time is locked and a seat is open",
+          pair["state"] == "CONFIRMED" and pair["size"] == 2 and pair["departure_time"] == T and pair["open_seat"],
+          json.dumps(pair))
+
+    def invited(candidates):
+        return [c for c in candidates if (group_of(c) or {}).get("invited")]
+
+    submit("imt2025204", route, 915, 30, 30)
+    release()
+    got = invited(["imt2025204"])
+    check("a pending student who fits is offered the seat", got == ["imt2025204"], str(got))
+    offer = group_of("imt2025204")
+    check("the offer is for a cab of three at the locked time, naming the pair",
+          offer["size"] == 3 and offer["departure_time"] == T
+          and sorted(o["student_id"] for o in offer["others"]) == ["imt2025202", "imt2025203"], json.dumps(offer))
+    check("...and says why, in a sentence about three people", "3 ways" in offer["explanation"], offer["explanation"])
+    check("the student who left this cab is not offered its seat back", group_of("imt2025201") is None)
+    check("the pair are told a seat is on offer", group_of("imt2025202")["seat_offered"] is True)
+
+    code, body = respond("imt2025204", gid, "decline", "TIME")
+    check("declining the seat leaves the pair alone", code == 200 and body["state"] == "OFFER_DECLINED", str(body))
+    check("...still a confirmed pair", group_of("imt2025202")["size"] == 2 and group_of("imt2025202")["state"] == "CONFIRMED")
+
+    submit("imt2025205", route, 920, 30, 30)
+    release()
+    check("the seat goes to someone else, never back to the one who declined",
+          invited(["imt2025204", "imt2025205"]) == ["imt2025205"])
+    backdate_offer(gid)
+    out = sweep()
+    check("an unanswered offer expires", [e["student_id"] for e in out["offers_expired"]] == ["imt2025205"], json.dumps(out))
+    check("...costing a timeout, and the pair is untouched",
+          mine("imt2025205")["request"]["decline_count"] == 1 and group_of("imt2025202")["size"] == 2)
+
+    submit("imt2025206", route, 925, 30, 30)
+    release()
+    check("the seat is offered to the next student", invited(["imt2025204", "imt2025205", "imt2025206"]) == ["imt2025206"])
+    code, body = respond("imt2025206", gid, "accept")
+    check("accepting completes the cab", code == 200 and body["state"] == "CONFIRMED", str(body))
+    done = group_of("imt2025202")
+    check("the pair see a full cab at the same time",
+          done["size"] == 3 and done["departure_time"] == T and done["state"] == "CONFIRMED", json.dumps(done))
+    check("...and who joined", "imt2025206" in [o["student_id"] for o in done["others"]])
+    check("the newcomer is confirmed", mine("imt2025206")["request"]["status"] == "CONFIRMED")
+
+
 def advice_before_a_release() -> None:
-    section("6. advice, on a pool that is still open")
+    section("8. advice, on a pool that is still open")
     route = "COLLEGE_AIRPORT"
     pool = generate(40, route, seed=3)
     check("40 requests submitted", seed_pool(pool) == 40)
@@ -217,7 +334,7 @@ def advice_before_a_release() -> None:
 
 
 def release_matches_the_solver() -> None:
-    section("7. the live release equals the solver run offline on the same pool")
+    section("9. the live release equals the solver run offline on the same pool")
     route = "COLLEGE_AIRPORT"
     pool = generate(40, route, seed=3)  # already submitted in section 6
     offline = solve(pool, CONFIG)
@@ -239,7 +356,7 @@ def release_matches_the_solver() -> None:
           all(len(g["members"]) == 3 for g in out["groups"]
               if any(by_id[m]["min_group_size"] == 3 for m in g["members"])))
 
-    section("8. each member is told why, naming nobody")
+    section("10. each member is told why, naming nobody")
     member = next(m for g in out["groups"] for m in g["members"])
     p = group_of(member)
     text = p["explanation"] or ""
@@ -253,7 +370,7 @@ def release_matches_the_solver() -> None:
 
 
 def a_bigger_pool() -> None:
-    section("9. a 120-student pool")
+    section("11. a 120-student pool")
     route = "COLLEGE_STATION"
     # a separate id range: section 6's students already exist, and a resubmission
     # would either be refused (409) or move that student to this route
@@ -273,7 +390,7 @@ def a_bigger_pool() -> None:
 
 
 def all_four_routes() -> None:
-    section("10. all four routes in one release")
+    section("12. all four routes in one release")
     from config import ROUTES
 
     for i, route in enumerate(ROUTES):
@@ -302,6 +419,8 @@ def main() -> int:
 
     lifecycle_scenarios()
     timeout_sweep()
+    trio_becomes_a_pair()
+    third_seat()
     advice_before_a_release()
     release_matches_the_solver()
     a_bigger_pool()

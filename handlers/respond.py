@@ -4,9 +4,23 @@ POST /groups/{id}/respond   body: {"action": "accept"}
                                   {"action": "decline", "reason": "PERSON",
                                    "payload": {"named_student_id": "imt2022103"}}
 
-Accepting locks the member in; the group is CONFIRMED once everyone has. A
-decline dissolves the whole group (consent doesn't survive a change to the
-package), applies whatever on_decline() returns, and returns everyone to the pool.
+Accepting locks the member in; the group is CONFIRMED once everyone has.
+
+A decline applies whatever on_decline() returns and sends the decliner back to
+the pool. What happens to the rest of the group depends on its size:
+
+  - a group of three is not dissolved: the other two keep the same departure
+    time and are asked again (stay as a pair, or split), because consent
+    doesn't survive a change to the package. Both staying confirms the pair;
+    either splitting is a decline of the pair, which dissolves it.
+  - a group of two, or a trio that can't continue as a pair, is dissolved.
+
+The response says which happened, and when the next release is, so the page can
+tell the student how long they'll wait.
+
+A confirmed pair may have a third seat on offer (release_orchestrator). The
+student it was offered to answers here too: accepting adds them, at the pair's
+departure time; declining leaves the pair untouched.
 """
 
 from __future__ import annotations
@@ -17,7 +31,9 @@ from cedar_authz import is_permitted
 from config import REASONS
 from handlers._common import identify, parse_body, response
 from handlers._decline import apply_decline
+from handlers._groups import confirm_group, resolve_departure
 from repo import get_repo
+from schedule import next_release_at
 
 # TIMEOUT is the sweep's reason, never a client's.
 CLIENT_REASONS = [r for r in REASONS if r != "TIMEOUT"]
@@ -53,13 +69,48 @@ def _clean_payload(raw: dict, group: dict, me: str) -> tuple[dict | None, str | 
     return payload, None
 
 
-def _confirm_if_complete(repo, group_id: str) -> dict:
+def _confirm_if_complete(repo, group_id: str, now: int) -> dict:
     group = repo.get_group(group_id)
     responses = group.get("responses") or {}
     if group["state"] == "FORMED" and all(responses.get(m) is True for m in group["members"]):
-        repo.confirm(group_id)
-        group = repo.get_group(group_id)
+        group = confirm_group(repo, group_id, now)
     return group
+
+
+def _validated_decline(body: dict, group: dict, me: str):
+    """(reason, payload, error response) for a decline request body."""
+    reason = body.get("reason")
+    if reason not in CLIENT_REASONS:
+        return None, None, response(400, {"error": f"reason must be one of {CLIENT_REASONS}"})
+    payload, err = _clean_payload(body.get("payload") or {}, group, me)
+    if err:
+        return None, None, response(400, {"error": err})
+    return reason, payload, None
+
+
+def _respond_to_seat(repo, who: dict, group: dict, body: dict, now: int):
+    """The student a confirmed pair's third seat was offered to."""
+    offer = group["seat_offer"]
+    if now > offer["deadline"]:
+        return response(409, {"error": "this offer has expired"})
+
+    action = body.get("action")
+    if action == "accept":
+        repo.accept_seat(group["group_id"], who["id"])
+        return response(200, {"state": "CONFIRMED", "accepted": len(group["members"]) + 1,
+                              "of": len(group["members"]) + 1})
+
+    if action == "decline":
+        reason, payload, err = _validated_decline(body, group, who["id"])
+        if err:
+            return err
+        apply_decline(repo, group, who["id"], reason, payload, group_size=len(group["members"]) + 1)
+        repo.decline_seat(group["group_id"], who["id"])
+        # the pair is untouched: only this offer ends
+        return response(200, {"state": "OFFER_DECLINED", "reason": reason,
+                              "next_release_at": next_release_at(repo, now)})
+
+    return response(400, {"error": "action must be 'accept' or 'decline'"})
 
 
 def handler(event, context):
@@ -78,14 +129,21 @@ def handler(event, context):
     if group is None:
         return response(404, {"error": "no such group"})
 
-    resource = {"type": "Group", "id": group_id, "members": group["members"], "state": group["state"]}
+    now = int(time.time())
+    # A student offered a seat is a prospective member: Cedar may let them answer.
+    offer = group.get("seat_offer")
+    invitee = bool(offer) and offer["student_id"] == who["id"]
+    members = group["members"] + ([who["id"]] if invitee else [])
+    resource = {"type": "Group", "id": group_id, "members": members, "state": group["state"]}
     if not is_permitted(who, "RespondToProposal", resource):
         return response(403, {"error": "only members of a group may respond to it"})
+    if invitee:
+        return _respond_to_seat(repo, who, group, body, now)
 
     # Cedar says who may respond; whether the group is still answerable is a state question.
     if group["state"] != "FORMED":
         return response(409, {"error": f"this group is {group['state']}"})
-    if int(time.time()) > group["accept_deadline"]:
+    if now > group["accept_deadline"]:
         return response(409, {"error": "the deadline for this proposal has passed"})
 
     action = body.get("action")
@@ -94,23 +152,20 @@ def handler(event, context):
     if action == "accept":
         if mine is not True:
             repo.record_response(group_id, who["id"], True)
-        group = _confirm_if_complete(repo, group_id)
+        group = _confirm_if_complete(repo, group_id, now)
         accepted = sum(1 for m in group["members"] if (group.get("responses") or {}).get(m) is True)
         return response(200, {"state": group["state"], "accepted": accepted, "of": len(group["members"])})
 
     if action == "decline":
         if mine is True:
             return response(409, {"error": "you already accepted; accepting locks you in"})
-        reason = body.get("reason")
-        if reason not in CLIENT_REASONS:
-            return response(400, {"error": f"reason must be one of {CLIENT_REASONS}"})
-        payload, err = _clean_payload(body.get("payload") or {}, group, who["id"])
+        reason, payload, err = _validated_decline(body, group, who["id"])
         if err:
-            return response(400, {"error": err})
+            return err
 
         apply_decline(repo, group, who["id"], reason, payload)
         repo.record_response(group_id, who["id"], False)
-        repo.dissolve(group_id, reason=reason, declined_by=who["id"])
-        return response(200, {"state": "DISSOLVED", "reason": reason})
+        outcome = resolve_departure(repo, group, [who["id"]], now, reason=reason, declined_by=who["id"])
+        return response(200, {"state": outcome, "reason": reason, "next_release_at": next_release_at(repo, now)})
 
     return response(400, {"error": "action must be 'accept' or 'decline'"})

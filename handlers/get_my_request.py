@@ -9,25 +9,46 @@ from repo import get_repo
 from roster import name_for
 
 
+def _person(student_id: str) -> dict:
+    return {"student_id": student_id, "name": name_for(student_id), "email": f"{student_id}@{EMAIL_DOMAIN}"}
+
+
 def _proposal(group: dict, who: dict) -> dict:
+    """The cab as this student sees it.
+
+    Three kinds of viewer: a member of a proposed or confirmed group; a member
+    of a trio that lost someone and is being asked whether to carry on as a
+    pair (`reduced`, and `left_by` says who); and a student who has been offered
+    the third seat of a confirmed pair (`invited`), who sees the cab as it would
+    be with them in it.
+    """
     members = group["members"]
+    offer = group.get("seat_offer")
+    invited = bool(offer) and offer["student_id"] == who["id"]
+    visible = members + ([who["id"]] if invited else [])
+    responses = group.get("responses") or {}
+    left_by = group.get("left_by") if group["state"] == "FORMED" else None
     proposal = {
         "group_id": group["group_id"],
-        "state": group["state"],
+        "state": "FORMED" if invited else group["state"],
         "departure_time": group["departure_time"],
-        "accept_deadline": group.get("accept_deadline"),
-        "size": len(members),
-        "my_response": (group.get("responses") or {}).get(who["id"]),
-        "accepted": sum(1 for m in members if (group.get("responses") or {}).get(m) is True),
-        "explanation": group.get("explanations", {}).get(who["id"]),
+        "accept_deadline": offer["deadline"] if invited else group.get("accept_deadline"),
+        "size": len(visible),
+        "my_response": None if invited else responses.get(who["id"]),
+        "accepted": len(members) if invited else sum(1 for m in members if responses.get(m) is True),
+        "explanation": offer.get("explanation") if invited else group.get("explanations", {}).get(who["id"]),
+        "invited": invited,
+        "reduced": bool(group.get("reduced")) and group["state"] == "FORMED",
+        "left_by": {"student_id": left_by, "name": name_for(left_by)} if left_by else None,
+        "open_seat": bool(group.get("open_seat")) and group["state"] == "CONFIRMED",
+        "seat_offered": bool(offer) and not invited,
         "others": [],
     }
-    resource = {"type": "Group", "id": group["group_id"], "members": members, "state": group["state"]}
+    resource = {"type": "Group", "id": group["group_id"], "members": visible, "state": group["state"]}
     # Cedar decides whether this caller may see who else is in the cab. They can:
     # naming someone in a "not with this person" decline needs a name.
     if is_permitted(who, "ViewContactDetails", resource):
-        proposal["others"] = [{"student_id": m, "name": name_for(m), "email": f"{m}@{EMAIL_DOMAIN}"}
-                              for m in sorted(members) if m != who["id"]]
+        proposal["others"] = [_person(m) for m in sorted(visible) if m != who["id"]]
     return proposal
 
 
@@ -40,6 +61,8 @@ def _last_outcome(repo, request: dict, me: str) -> dict | None:
     """
     group = repo.get_group(request["last_group_id"]) if request.get("last_group_id") else None
     if group is None or group["state"] != "DISSOLVED":
+        return None
+    if me not in group["members"]:  # they left it earlier; its end is none of their business
         return None
     by = group.get("declined_by")
     return {

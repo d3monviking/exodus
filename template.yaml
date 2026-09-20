@@ -2,6 +2,15 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: Exodus — cab-cluster coordinator (local, Build It track)
 
+Parameters:
+  TravelDate:
+    Type: String
+    Default: ""
+    Description: >
+      YYYY-MM-DD of the trip, in the college's timezone. Blank means the day of
+      each release. Decides how far off a departure is when a confirmed pair is
+      offered a third rider (schedule.py).
+
 Globals:
   Api:
     Cors:
@@ -23,6 +32,7 @@ Globals:
         RELEASES_TABLE: Releases
         RELEASE_LOG_BUCKET: exodus-release-log
         RELEASE_INTERVAL_SECONDS: "120"
+        EXODUS_TRAVEL_DATE: !Ref TravelDate
 
 Resources:
   SubmitRequestFunction:

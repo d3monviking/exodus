@@ -14,14 +14,18 @@ import json
 from lifecycle import on_decline
 
 
-def apply_decline(repo, group: dict, student_id: str, reason: str, client_payload: dict) -> dict:
+def apply_decline(repo, group: dict, student_id: str, reason: str, client_payload: dict,
+                  group_size: int | None = None) -> dict:
+    """`group_size` is the size of the cab being turned down, which is one more
+    than the members when a student declines an offered third seat."""
     request = repo.get_request(student_id)
     if request is None:  # already withdrawn; nothing to update
         return {}
 
     # Group facts are set by the server, after the client's payload, so a client
     # can't forge the departure time or size that a soft anchor would record.
-    payload = {**client_payload, "departure_time": group["departure_time"], "group_size": len(group["members"])}
+    payload = {**client_payload, "departure_time": group["departure_time"],
+               "group_size": group_size if group_size is not None else len(group["members"])}
 
     delta = on_decline(request, reason, payload)
     # Half of Gate 2 failures are a delta A returned correctly that B didn't write; keep it visible.

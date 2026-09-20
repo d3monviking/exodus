@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import time
 
 from config import ROUTES
 from handlers._common import response
 from repo import get_repo
-
-RELEASE_INTERVAL_SECONDS = int(os.environ.get("RELEASE_INTERVAL_SECONDS", "120"))
+from schedule import RELEASE_INTERVAL_SECONDS
 
 
 def handler(event, context):

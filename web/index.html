@@ -313,11 +313,27 @@ function render(next) {
   renderBoard();
 }
 
-// A cab falls through when someone declines or nobody answers in time. Say
-// which, and that the next release will try again: a dissolved group is not
-// the end of the road, and a student who doesn't know that just leaves.
-function dissolveMessage(outcome) {
-  const back = "You're back in the pool, and the next release will group you again.";
+// How long until the next release, as a phrase. The board's countdown ticks
+// live; a sentence can't, so it says "about N min".
+function nextReleaseWhen(at) {
+  if (!at) return "coming up";
+  const secs = at - nowServer();
+  return secs <= 60 ? "due in under a minute" : `in about ${Math.ceil(secs / 60)} min`;
+}
+
+// Someone leaves a cab. What the rest of us are told depends on who we are:
+// the one who left, the others in a cab that fell apart, or the two who are
+// left as a pair. Every version says when the next release is, because that is
+// the wait: a student who doesn't know it just leaves.
+function declinedMessage(at) {
+  return `You declined. You're back in the pool, and the next release is ${nextReleaseWhen(at)}: ` +
+    "that's when you'll be grouped again, so you'll have to wait for it.";
+}
+
+function dissolveMessage(outcome, prevProposal) {
+  const at = board && board.next_release_at;
+  const back = `You're back in the pool. The next release is ${nextReleaseWhen(at)}, and it will group you again.`;
+  if (prevProposal && prevProposal.invited) return `That seat offer has expired. ${back}`;
   if (!outcome) return `Your cab was called off. ${back}`;
   if (outcome.cause === "you_declined") return `You declined that cab. ${back}`;
   if (outcome.cause === "timeout") return `Nobody answered in time, so that cab was called off. ${back}`;
@@ -325,13 +341,31 @@ function dissolveMessage(outcome) {
   return `${who} backed out, so that cab was called off. ${back}`;
 }
 
+function reducedMessage(p) {
+  const who = p.left_by ? (p.left_by.name || p.left_by.student_id) : "Someone";
+  return `${who} backed out, so your cab is now a pair, still leaving at ${fromMinutes(p.departure_time)}. ` +
+    "Stay together, or split: if you split you both go back to the pool and wait for the next release " +
+    `(${nextReleaseWhen(board && board.next_release_at)}).`;
+}
+
 function detectTransitions(prev, next) {
-  const had = prev.proposal && prev.proposal.state === "FORMED";
-  const has = next.proposal && next.proposal.state === "FORMED";
-  if (has && (!had || prev.proposal.group_id !== next.proposal.group_id)) {
+  const pp = prev.proposal, np = next.proposal;
+  const had = pp && pp.state === "FORMED";
+  const has = np && np.state === "FORMED";
+  if (has && np.invited && !(pp && pp.invited && pp.group_id === np.group_id)) {
+    notify(`A seat has opened in a cab that's already agreed for two people, leaving at ${fromMinutes(np.departure_time)}. ` +
+      "Accept it or decline before the deadline.", "ok", true);
+  } else if (has && (!had || pp.group_id !== np.group_id)) {
     notify("You've been grouped. Review the proposal and respond before the deadline.", "ok", true);
-  } else if (had && !next.proposal && next.request && next.request.status === "PENDING" && !suppressDissolveNotice) {
-    notify(dissolveMessage(next.last_outcome), "warn");
+  } else if (has && had && np.reduced && !pp.reduced) {
+    notify(reducedMessage(np), "warn", true);
+  } else if (had && !np && next.request && next.request.status === "PENDING" && !suppressDissolveNotice) {
+    notify(dissolveMessage(next.last_outcome, pp), "warn");
+  } else if (pp && np && pp.state === "CONFIRMED" && np.state === "CONFIRMED"
+             && pp.group_id === np.group_id && np.size > pp.size) {
+    const joined = np.others.filter((o) => !pp.others.some((x) => x.student_id === o.student_id)).map(personLabel);
+    notify(`${joined.join(", ")} joined your cab. It's now a full cab of three, still leaving at ` +
+      `${fromMinutes(np.departure_time)}.`, "ok", true);
   }
   const status = (d) => d.request && d.request.status;
   if (status(next) === "CONFIRMED" && status(prev) !== "CONFIRMED") notify("Your cab is confirmed.", "ok", true);
@@ -353,7 +387,14 @@ function renderProposal() {
   if (p.others && p.others.length)
     row(dl, "Travelling with", p.others.map(personLabel).join(", ")
         + (confirmed ? ` — ${p.others.map((o) => o.email).join(", ")}` : ""));
-  box.append(el("div", { class: "proposal" }, el("h2", {}, confirmed ? "Your cab is confirmed" : "Proposed group"), dl));
+  if (confirmed && p.size === 2) {
+    row(dl, "Third seat", p.seat_offered ? "Offered to someone; waiting for their answer."
+      : p.open_seat ? "Open. We'll try to fill it at upcoming releases; your departure time won't change."
+      : "Not being filled: this cab leaves too soon for another release to find someone.");
+  }
+  const heading = confirmed ? "Your cab is confirmed" : p.invited ? "A seat is open in this cab"
+    : p.reduced ? "Your cab is now a pair" : "Proposed group";
+  box.append(el("div", { class: "proposal" }, el("h2", {}, heading), dl));
   if (confirmed) return;
 
   const wrap = box.firstChild;
@@ -375,9 +416,16 @@ function renderActions(p) {
     return;
   }
   if (flow.step === null) {
+    if (p.reduced)
+      box.append(el("p", {}, "Stay together and the departure time is locked. If you split, you both go back to the pool " +
+        `and wait for the next release (${nextReleaseWhen(board && board.next_release_at)}).`));
+    if (p.invited)
+      box.append(el("p", {}, "The other two have already agreed to this cab. Taking the seat doesn't change the departure time."));
     box.append(el("div", { class: "actions" },
-      el("button", { type: "button", id: "accept", onclick: () => respond({ action: "accept" }) }, "Accept"),
-      el("button", { type: "button", class: "secondary", id: "decline", onclick: () => setFlow("reason") }, "Decline…")));
+      el("button", { type: "button", id: "accept", onclick: () => respond({ action: "accept" }) },
+        p.invited ? "Take this seat" : p.reduced ? "Stay as a pair" : "Accept"),
+      el("button", { type: "button", class: "secondary", id: "decline", onclick: () => setFlow("reason") },
+        p.invited ? "No thanks…" : p.reduced ? "Split…" : "Decline…")));
     return;
   }
 
@@ -385,7 +433,7 @@ function renderActions(p) {
   const picker = el("div", { class: "picker" });
 
   if (flow.step === "reason") {
-    picker.append(el("p", {}, "Why are you declining? Your answer helps the next release get it right."));
+    picker.append(el("p", {}, `Why are you ${p.reduced ? "splitting" : "declining"}? Your answer helps the next release get it right.`));
     for (const r of DECLINE_REASONS) {
       picker.append(el("button", { type: "button", class: "secondary opt", "data-reason": r.reason,
         onclick: () => chooseReason(r.reason) }, r.label, el("small", {}, r.hint)));
@@ -452,9 +500,7 @@ async function respond(body) {
       notify(res.state === "CONFIRMED" ? "Your cab is confirmed." : "You accepted. Waiting for the others.", "ok", true);
     } else {
       suppressDissolveNotice = true;
-      notify(body.reason === "PLANS_CHANGED"
-        ? "Your request was removed."
-        : dissolveMessage({ cause: "you_declined" }), "warn");
+      notify(body.reason === "PLANS_CHANGED" ? "Your request was removed." : declinedMessage(res.next_release_at), "warn");
     }
     lastKey = null;
     await poll();

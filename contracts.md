@@ -85,6 +85,8 @@ def should_sit_out(request: dict, config: dict) -> bool:
 | `increment_decline_count` | Counter on the request |
 | `add_anchor` | Append to `declined_anchors` |
 
+A group is `FORMED` until everyone accepts, then `CONFIRMED`; a decline in a group of three leaves it `FORMED` with two members and `reduced: true` (and `left_by`, and every response cleared), and a group of two dissolves. A confirmed pair may carry `open_seat` and, while a seat is on offer, `seat_offer: {student_id, deadline, explanation}`; `excluded` lists who must not be offered that cab's seat. The departure time is fixed at formation and never changes, whatever happens to the members.
+
 `declined_anchors` is recorded but nothing reads it yet: the soft time anchor of architecture 7.5 is not implemented, and the decline budget is what guarantees the release loop terminates.
 
 ### `on_decline` payload — agreed

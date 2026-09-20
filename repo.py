@@ -212,6 +212,80 @@ class FakeRepo(Repo):
                     req["last_group_id"] = group_id
             self._write(data)
 
+    # -- a group that loses a member without dissolving ------------------------
+
+    def update_group(self, group_id: str, fields: dict) -> None:
+        with self._lock:
+            data = self._read()
+            data["groups"][group_id].update(fields)
+            self._write(data)
+
+    def reduce_group(self, group_id: str, leaver: str, accept_deadline: int, explanations: dict) -> None:
+        """A member leaves and the rest are asked again, at the same departure time.
+
+        Consent doesn't survive a change of package, so every response is cleared.
+        """
+        with self._lock:
+            data = self._read()
+            group = data["groups"][group_id]
+            group["members"] = [m for m in group["members"] if m != leaver]
+            group.update(responses={}, reduced=True, left_by=leaver, accept_deadline=accept_deadline,
+                         explanations=explanations)
+            group["excluded"] = [*group.get("excluded", []), leaver]
+            req = data["requests"].get(leaver)
+            if req is not None and req.get("current_group_id") == group_id:
+                req["status"] = "PENDING"
+                req["current_group_id"] = None
+                req["last_group_id"] = group_id
+            self._write(data)
+
+    def open_seat_groups(self, route: str) -> list[dict]:
+        """Confirmed pairs still looking for a third rider, with no offer outstanding."""
+        with self._lock:
+            return [g for g in self._read()["groups"].values()
+                    if g["route"] == route and g["state"] == "CONFIRMED" and g.get("open_seat")
+                    and not g.get("seat_offer")]
+
+    def groups_with_offers(self) -> list[dict]:
+        with self._lock:
+            return [g for g in self._read()["groups"].values() if g.get("seat_offer")]
+
+    def offer_seat(self, group_id: str, student_id: str, deadline: int, explanation: str) -> None:
+        """Offer a confirmed pair's third seat to a pending student, who must accept it."""
+        with self._lock:
+            data = self._read()
+            data["groups"][group_id]["seat_offer"] = {
+                "student_id": student_id, "deadline": deadline, "explanation": explanation}
+            req = data["requests"][student_id]
+            req["status"] = "GROUPED"
+            req["current_group_id"] = group_id
+            self._write(data)
+
+    def accept_seat(self, group_id: str, student_id: str) -> None:
+        with self._lock:
+            data = self._read()
+            group = data["groups"][group_id]
+            group["members"] = [*group["members"], student_id]
+            group["seat_offer"] = None
+            group["open_seat"] = False
+            req = data["requests"].get(student_id)
+            if req is not None:
+                req["status"] = "CONFIRMED"
+            self._write(data)
+
+    def decline_seat(self, group_id: str, student_id: str) -> None:
+        """The offer ends without the pair being touched; this student is not asked again for this cab."""
+        with self._lock:
+            data = self._read()
+            group = data["groups"][group_id]
+            group["seat_offer"] = None
+            group["excluded"] = [*group.get("excluded", []), student_id]
+            req = data["requests"].get(student_id)
+            if req is not None and req.get("current_group_id") == group_id:
+                req["status"] = "PENDING"
+                req["current_group_id"] = None
+            self._write(data)
+
     def add_block(self, student_a: str, student_b: str, reason: str) -> None:
         with self._lock:
             data = self._read()

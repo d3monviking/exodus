@@ -260,6 +260,114 @@ class DynamoRepo(Repo):
                     ExpressionAttributeValues={":s": "PENDING", ":g": group_id},
                 )
 
+    # -- a group that loses a member without dissolving ----------------------
+
+    def update_group(self, group_id: str, fields: dict) -> None:
+        self.groups.update_item(
+            Key={"group_id": group_id},
+            UpdateExpression="SET " + ", ".join(f"#{k} = :{k}" for k in fields),
+            ExpressionAttributeNames={f"#{k}": k for k in fields},
+            ExpressionAttributeValues={f":{k}": v for k, v in fields.items()},
+        )
+
+    def _return_to_pool(self, student_id: str, group_id: str, remember: bool) -> None:
+        """Back to PENDING, if the request still exists and is still tied to this group.
+
+        The existence check matters: update_item on a withdrawn request would
+        quietly create a stray item.
+        """
+        req = self.requests.get_item(Key={"student_id": student_id}, ConsistentRead=True).get("Item")
+        if req is None or req.get("current_group_id") != group_id:
+            return
+        self.requests.update_item(
+            Key={"student_id": student_id},
+            UpdateExpression="SET #s = :s" + (", last_group_id = :g" if remember else "") + " REMOVE current_group_id",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":s": "PENDING", **({":g": group_id} if remember else {})},
+        )
+
+    def reduce_group(self, group_id: str, leaver: str, accept_deadline: int, explanations: dict) -> None:
+        """A member leaves and the rest are asked again, at the same departure time.
+
+        Consent doesn't survive a change of package, so every response is cleared.
+        """
+        group = self.groups.get_item(Key={"group_id": group_id}, ConsistentRead=True).get("Item")
+        if group is None:
+            return
+        self.groups.update_item(
+            Key={"group_id": group_id},
+            UpdateExpression=("SET #m = :m, #r = :r, #red = :t, #l = :l, #d = :d, #e = :e, "
+                              "#x = list_append(if_not_exists(#x, :none), :who)"),
+            ExpressionAttributeNames={"#m": "members", "#r": "responses", "#red": "reduced", "#l": "left_by",
+                                      "#d": "accept_deadline", "#e": "explanations", "#x": "excluded"},
+            ExpressionAttributeValues={":m": [m for m in group.get("members", []) if m != leaver], ":r": {},
+                                       ":t": True, ":l": leaver, ":d": accept_deadline, ":e": explanations,
+                                       ":none": [], ":who": [leaver]},
+        )
+        self._return_to_pool(leaver, group_id, remember=True)
+
+    def _scan_groups(self, condition) -> list[dict]:
+        items, kwargs = [], {"FilterExpression": condition}
+        while True:
+            page = self.groups.scan(**kwargs)
+            items += page.get("Items", [])
+            if "LastEvaluatedKey" not in page:
+                return [_to_native(i) for i in items]
+            kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+    def open_seat_groups(self, route: str) -> list[dict]:
+        """Confirmed pairs still looking for a third rider, with no offer outstanding."""
+        from boto3.dynamodb.conditions import Attr
+
+        found = self._scan_groups(Attr("route").eq(route) & Attr("state").eq("CONFIRMED")
+                                  & Attr("open_seat").eq(True))
+        return [g for g in found if not g.get("seat_offer")]
+
+    def groups_with_offers(self) -> list[dict]:
+        from boto3.dynamodb.conditions import Attr
+
+        return self._scan_groups(Attr("seat_offer").exists())
+
+    def offer_seat(self, group_id: str, student_id: str, deadline: int, explanation: str) -> None:
+        """Offer a confirmed pair's third seat to a pending student, who must accept it."""
+        self.groups.update_item(
+            Key={"group_id": group_id},
+            UpdateExpression="SET seat_offer = :o",
+            ExpressionAttributeValues={":o": {"student_id": student_id, "deadline": deadline,
+                                              "explanation": explanation}},
+        )
+        self.requests.update_item(
+            Key={"student_id": student_id},
+            UpdateExpression="SET #s = :s, current_group_id = :g",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":s": "GROUPED", ":g": group_id},
+        )
+
+    def accept_seat(self, group_id: str, student_id: str) -> None:
+        self.groups.update_item(
+            Key={"group_id": group_id},
+            UpdateExpression="SET #m = list_append(#m, :who), open_seat = :f REMOVE seat_offer",
+            ExpressionAttributeNames={"#m": "members"},
+            ExpressionAttributeValues={":who": [student_id], ":f": False},
+        )
+        if self.requests.get_item(Key={"student_id": student_id}, ConsistentRead=True).get("Item") is not None:
+            self.requests.update_item(
+                Key={"student_id": student_id},
+                UpdateExpression="SET #s = :s",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":s": "CONFIRMED"},
+            )
+
+    def decline_seat(self, group_id: str, student_id: str) -> None:
+        """The offer ends without the pair being touched; this student is not asked again for this cab."""
+        self.groups.update_item(
+            Key={"group_id": group_id},
+            UpdateExpression="SET #x = list_append(if_not_exists(#x, :none), :who) REMOVE seat_offer",
+            ExpressionAttributeNames={"#x": "excluded"},
+            ExpressionAttributeValues={":none": [], ":who": [student_id]},
+        )
+        self._return_to_pool(student_id, group_id, remember=False)
+
     def add_block(self, student_a: str, student_b: str, reason: str) -> None:
         pair_key = "|".join(sorted([student_a, student_b]))
         self.blocks.put_item(

@@ -2,7 +2,8 @@
 """
 Gate 2, end to end over HTTP: the loop closes.
 
-  seed 3 -> release -> one member declines "not with this person" by name -> the group
+  seed 3 -> release -> one member declines "not with this person" by name -> the
+  other two are asked to carry on as a pair -> one would rather split, so it
   dissolves and everyone is back in the pool -> next release routes around the
   block -> the remaining pair accepts -> CONFIRMED, contacts revealed.
 
@@ -67,12 +68,25 @@ def main() -> int:
           and [o["student_id"] for o in p["others"]] == ["imt2022102", "imt2022103"], json.dumps(p.get("others")))
     gid = p["group_id"]
 
-    print("2. imt2022101 declines: 'not with this person' (imt2022103)")
+    print("2. imt2022101 declines: 'not with this person' (imt2022103); the other two are asked to carry on")
     code, body = call(api, "POST", f"/groups/{gid}/respond", e1,
                       {"action": "decline", "reason": "PERSON", "payload": {"named_student_id": "imt2022103"}})
-    check("decline accepted, group DISSOLVED", code == 200 and body["state"] == "DISSOLVED", str(body))
+    check("decline accepted; the cab carries on without them", code == 200 and body["state"] == "REDUCED", str(body))
+    check("the decliner is told when the next release is", bool(body.get("next_release_at")), str(body))
+    check("101 is back in the pool", mine(e1)["request"]["status"] == "PENDING" and mine(e1)["proposal"] is None)
+    asked = [mine(e)["proposal"] for e in (e2, e3)]
+    check("102 and 103 are asked whether to stay as a pair, at the same time",
+          all(q and q["reduced"] and q["size"] == 2 and q["departure_time"] == p["departure_time"]
+              and q["left_by"]["student_id"] == "imt2022101" for q in asked), json.dumps(asked))
+
+    print("2b. imt2022103 would rather split, so the pair dissolves")
+    code, body = call(api, "POST", f"/groups/{gid}/respond", e3, {"action": "decline", "reason": "TIME"})
+    check("the pair dissolves", code == 200 and body["state"] == "DISSOLVED", str(body))
     check("everyone is back in the pool",
           all(mine(e)["request"]["status"] == "PENDING" and mine(e)["proposal"] is None for e in (e1, e2, e3)))
+    told = mine(e2)["last_outcome"]
+    check("102 is told 103 backed out", told and told["cause"] == "declined"
+          and told["who"]["student_id"] == "imt2022103", json.dumps(told))
     _, board = call(api, "GET", "/board")
     check("board shows all 3 pending again", board["routes"]["COLLEGE_AIRPORT"]["pool_size"] == 3)
 

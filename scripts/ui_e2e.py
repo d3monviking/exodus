@@ -3,9 +3,10 @@
 Browser end-to-end for the board: real Chrome, one isolated session per student,
 each polling the real API like a real user.
 
-  A. three students grouped; one declines "not with this person" by name;
-     the others are told their group dissolved; the next release pairs two of
-     them; both accept and see the confirmed cab and each other's contact.
+  A. three students grouped; one declines "not with this person" by name; the
+     other two are told and asked to stay as a pair or split; one splits, so the
+     cab dissolves; the next release pairs two of them; both accept and see the
+     confirmed cab and each other's contact.
   B. widen-my-window decline updates the request; a plans-changed decline
      withdraws it, and "check my chances" answers from the real solver.
 
@@ -42,6 +43,12 @@ def check(label, ok, detail=""):
     global failures
     failures += not ok
     print(f"  {'PASS' if ok else 'FAIL'}  {label}" + (f"   [{detail}]" if detail and not ok else ""))
+
+
+def api(method, path, email, body=None):
+    req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json", "X-Student-Email": email})
+    return json.load(urllib.request.urlopen(req, timeout=60))
 
 
 def release():
@@ -130,12 +137,23 @@ def main() -> int:
                              "document.getElementById('status').textContent.includes('PENDING')", timeout=15000)
         check("decliner sees a confirmation and is PENDING again",
               "PENDING" in p1.inner_text("#status") and not p1.is_hidden("#form-card"))
-        told = [wait_for_notice(pg, "called off") for pg in (p2, p3)]
-        check("both non-decliners are told the cab fell through", all(told))
-        check("the other two are told who backed out and that they'll be grouped again",
-              all(name_for("imt2022101") in notice(pg) and "backed out" in notice(pg)
-                  and "next release will group you again" in notice(pg) for pg in (p2, p3)), notice(p2))
-        check("the decliner is told it was them", "You declined that cab" in notice(p1), notice(p1))
+        check("the decliner is told when the next release is, and that they wait for it",
+              "the next release is" in notice(p1) and "wait" in notice(p1), notice(p1))
+        told = [wait_for_notice(pg, "now a pair") for pg in (p2, p3)]
+        check("the other two are told who backed out and asked to stay or split",
+              all(told) and all(name_for("imt2022101") in notice(pg) and "backed out" in notice(pg)
+                                and "split" in notice(pg) for pg in (p2, p3)), notice(p2))
+        actions = [pg.eval_on_selector("#actions", "e => e.textContent") for pg in (p2, p3)]
+        check("...with both choices on screen, and the cost of splitting spelled out",
+              all("Stay as a pair" in a and "Split" in a and "wait for the next release" in a for a in actions),
+              str(actions))
+
+        # 103 would rather split, so the pair dissolves and everyone goes back to the pool
+        p3.click("#decline"); p3.wait_for_selector(".picker .opt")
+        p3.click('[data-reason="TIME"]'); p3.wait_for_selector("#keep"); p3.click("#keep")
+        check("the one who wanted to stay is told who backed out, and when the next release is",
+              wait_for_notice(p2, "called off") and name_for("imt2022103") in notice(p2)
+              and "next release is" in notice(p2), notice(p2))
 
         release()
         for pg in (p1, p2):
@@ -172,6 +190,10 @@ def main() -> int:
         q.wait_for_function("document.getElementById('status').textContent.includes('45 min earlier / 45 min later')", timeout=15000)
         check("window widened to 45/45 and no budget wasted", "45 min earlier / 45 min later" in q.inner_text("#status"))
 
+        # the other two were asked to carry on as a pair; one splits, so everyone can be regrouped
+        other = "imt2022202@iiitb.ac.in"
+        gid = api("GET", "/requests/me", other)["proposal"]["group_id"]
+        api("POST", f"/groups/{gid}/respond", other, {"action": "decline", "reason": "TIME"})
         release()
         q.wait_for_selector("#proposal .proposal h2", timeout=15000)
         q.click("#decline"); q.wait_for_selector(".picker .opt")

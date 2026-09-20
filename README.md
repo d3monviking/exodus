@@ -10,8 +10,10 @@ Everything runs on one laptop with no AWS account: SAM CLI hosts the Lambda hand
 
 1. A student signs in with an `@iiitb.ac.in` roll-number address (`imt2022001@…`; `hello@iiitb.ac.in` is nobody), picks a route from fixed dropdowns, and gives a preferred departure time plus how much *earlier* and *later* they'll accept.
 2. A timer fires a **release**. For each route the solver partitions the whole pending pool into groups. Each group becomes a `FORMED` proposal with a departure time and an accept deadline.
-3. Every member accepts or declines. When all accept, the group is `CONFIRMED` and members see each other's contact. **One decline dissolves the whole group**, records why, and returns everyone to the pool.
-4. Silence past the deadline counts as a `TIMEOUT` decline. A student who keeps declining without changing anything sits out one release, so the loop always terminates.
+3. Every member accepts or declines. When all accept, the group is `CONFIRMED` and members see each other's contact.
+4. **A decline in a group of three doesn't dissolve it.** The decliner goes back to the pool and is told how long until the next release. The other two keep the same departure time and are asked again: *stay together as a pair*, or *split* (and both wait for the next release). Their earlier accepts don't carry over, since they agreed to a trio. If both stay, the pair is confirmed and its time is locked; if either splits, the group dissolves, and the splitter's reason is recorded like any decline. A trio that can't continue as a pair (one of the two only takes full cabs, or they're blocked) dissolves at once, and a decline in a group of two always does.
+5. **A confirmed pair can gain a third rider.** If it leaves late enough, a later release offers the seat to the pending student who fits it best. The departure time never changes, so a student fits only if that exact time is inside their own window; they must accept, and can decline like any proposal. The pair are told who joined. Two thresholds, both in `config.py`: the pair stays open only if it leaves at least `backfill_open_lead_minutes` (6 h) after the next release, and a release may offer the seat only at least `backfill_close_lead_minutes` (3 h) before departure. Whoever left the cab is never offered its seat back.
+6. Silence past the deadline counts as a `TIMEOUT` decline: one silent member of a trio carries on as a pair exactly as a decline would, and an unanswered seat offer simply expires. A student who keeps declining without changing anything sits out one release, so the loop always terminates.
 
 Before submitting, a student can ask `POST /advise` how their window will fare: it runs the real solver on the current pool plus their hypothetical request and answers concretely — *with ±15 you would travel alone; ±45 puts you in a cab leaving 35 minutes earlier, 78% of your flexibility*. Every proposal also carries an explanation of the trade it made. Both come from the solver's arithmetic; there is no language model anywhere in this codebase.
 
@@ -36,6 +38,7 @@ docker compose up -d                    # LocalStack: DynamoDB, EventBridge, S3
 .venv/bin/python create_tables.py       # tables + audit bucket; re-run any time to reset
 
 scripts/start_api.sh                    # terminal 1: API on http://127.0.0.1:3000
+                                        #   EXODUS_TRAVEL_DATE=YYYY-MM-DD scripts/start_api.sh  to say which day the trip is
 python3 -m http.server 8080 --directory web   # terminal 2: UI on http://127.0.0.1:8080
 scripts/scheduler.sh                    # terminal 3 (optional): release every 120s, sweep every 30s
 ```
@@ -64,15 +67,17 @@ Open http://127.0.0.1:8080 and sign in as `imt2022101@iiitb.ac.in`, then `imt202
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests        # 187 unit tests; no containers needed
+.venv/bin/python -m pytest tests        # 256 unit tests; no containers needed
 scripts/gate2.py                        # the decline loop end to end over HTTP
-scripts/e2e.py                          # every reason, the budget, the sweep, 4 routes, 120 students
+scripts/e2e.py                          # every reason, the budget, the sweep, trio-to-pair, a third rider, 4 routes, 120 students
 .venv/bin/python scripts/ui_e2e.py      # the board in real Chrome, several sessions
 ```
 
 The three scripts need the stack running and **empty tables** (`create_tables.py` first), one at a time.
 
-`e2e.py` is the broad one: each decline reason, the decline budget and the sit-out, the deadline sweep, advice on an open pool, all four routes in one release, and a 120-student pool whose live result is compared field by field against the solver run offline on the same pool.
+`e2e.py` is the broad one: each decline reason, the decline budget and the sit-out, the deadline sweep, a trio that loses a member and carries on as a pair, a confirmed pair gaining a third rider (offered, declined, expired, accepted), advice on an open pool, all four routes in one release, and a 120-student pool whose live result is compared field by field against the solver run offline on the same pool.
+
+The third-rider scenario needs to know which day the trip is on, because a departure is only "far enough away" relative to a date: start the API with `EXODUS_TRAVEL_DATE=<tomorrow> scripts/start_api.sh` and export the same value when running `e2e.py`, or that scenario prints `SKIP`. See [Limitations](#limitations).
 
 ## Layout
 
@@ -82,9 +87,10 @@ The three scripts need the stack running and **empty tables** (`create_tables.py
 | `lifecycle.py` | what a decline changes, and when a student sits a release out |
 | `explainer.py` | why a student got the group they got, from the solver's own numbers |
 | `advisor.py` | what a window is likely to get you, by running the solver on the pool plus a hypothetical request |
+| `schedule.py` | the wall clock: when the next release is, and whether a cab leaves late enough that a third rider is still worth finding |
 | `poolgen.py` | seeded synthetic pools that look like an end-of-semester evening |
 | `roster.py`, `roster.csv` | roll number to name, the mapping a college would own; override the path with `ROSTER_FILE` |
-| `handlers/` | Lambda handlers: `submit_request`, `get_my_request`, `get_board`, `advise`, `respond`, `release_orchestrator`, `lifecycle_sweep`; `_decline.py` is the one path every decline takes |
+| `handlers/` | Lambda handlers: `submit_request`, `get_my_request`, `get_board`, `advise`, `respond`, `release_orchestrator`, `lifecycle_sweep`; `_decline.py` is the one path every decline takes, `_groups.py` what happens to a group when someone leaves or it is confirmed |
 | `policies.cedar`, `cedar_authz.py` | the four policies, and `is_permitted()`, the only code that talks to Cedar (fails closed) |
 | `repo.py`, `repo_dynamo.py` | the data layer: a JSON-file `FakeRepo` and the real `DynamoRepo`, one interface |
 | `config.py` | every tuning constant and enum; nothing else hardcodes one |
@@ -101,7 +107,7 @@ Every time in every body is minutes since midnight. Identity is the `X-Student-E
 | `POST` | `/requests` | `{route, p, b, a, min_group_size?}` | `201` the stored request |
 | `GET` | `/requests/me` | — | `{me, request, proposal}`; the proposal carries its explanation and names the other members |
 | `POST` | `/advise` | `{route, p, b, a}` | `{message, simulated_outcome, pool, better_window}` |
-| `POST` | `/groups/{id}/respond` | `{action: "accept" or "decline", reason?, payload?}` | `200 {state, ...}` |
+| `POST` | `/groups/{id}/respond` | `{action: "accept" or "decline", reason?, payload?}` | `200 {state, ...}`. A decline returns `REDUCED` (the group carries on as a pair), `DISSOLVED`, or `OFFER_DECLINED` (a third seat), plus `next_release_at`. Also how a student answers an offered third seat. |
 | `GET` | `/board` | — | countdown, per-route pool size and last release |
 | `POST` | `/internal/release` | — | fires a release (`?force=1` ignores the minimum gap) |
 | `POST` | `/internal/sweep` | — | resolves groups past their accept deadline |
@@ -133,6 +139,8 @@ The grouping logic and the platform meet only at [`contracts.md`](contracts.md),
 - **Sign-in is not real.** Identity is the unverified `X-Student-Email` header: the address must be an IIITB roll number (`imt|mt|ms|phd` + 7 digits) at `iiitb.ac.in`, but nothing proves it is yours, so anyone who can reach the API can act as any student. `start_api.sh` binds `127.0.0.1` only for this reason. Don't expose it.
 - **Releases come from a timer loop**, not EventBridge. LocalStack can fire schedules, but it can't invoke a function hosted by `sam local start-api`. The handlers accept both event shapes, so nothing changes if they're deployed to AWS later.
 - **The board's "last release" figure** is the most recent release on the route, so it can drop after a later, smaller one.
+- **The system has no travel date, so one is configured.** A departure is minutes since midnight and a release is a wall-clock time; deciding whether a pair leaves "6 hours after the next release" needs the day they're on. `schedule.py` measures against the day of the release unless `EXODUS_TRAVEL_DATE` (or `config["travel_date"]`) says otherwise, in the college's timezone (`tz_offset_minutes`, IST by default). Run after the pool's departure times without setting it and no pair has room for a third rider, which is correct but looks like the feature doing nothing.
+- **Filling a seat is a heuristic.** Seats are offered before the pool is solved, to the student with the smallest penalty at the pair's locked time, so a student who takes a seat is unavailable to the solver even if a better group existed for them. The pair have no veto over a third rider beyond their blocklists.
 - **Soft time anchors are not implemented.** A time-based decline records `(departure_time, group_size)` in `declined_anchors`, and the solver ignores it. Termination is guaranteed by the decline budget instead: two declines that change nothing and the student sits out a release.
 - **Advice reflects the pool as it is now.** After a release most requests are `GROUPED`, so `POST /advise` is only informative while a pool is still open, and it says so in its own answer.
 - **Contiguity is a heuristic.** The departure time is exactly optimal on the 5-minute grid, and the partition is exactly optimal over runs contiguous in each ordering the solver tries; with widely varying window shapes that can still miss the true optimum, measured at about 2% of random small pools (`solver.py` documents the numbers).

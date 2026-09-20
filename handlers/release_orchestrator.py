@@ -6,6 +6,11 @@ POST /internal/release (or by an EventBridge event when deployed to AWS).
 Decline budget: a student who has used it up sits out this release (SAT_OUT)
 and is revived, with a fresh budget, at the start of the next. That guarantees
 a re-proposed, re-declined group can't loop forever.
+
+Open seats: a confirmed pair whose cab leaves late enough may still gain a
+third rider. Before the pool is solved, each such seat is offered to the pending
+student who fits it best. The pair's departure time is locked, so a candidate
+fits only if that exact time is inside their own window.
 """
 
 from __future__ import annotations
@@ -21,7 +26,8 @@ from explainer import explain
 from handlers._common import response
 from lifecycle import should_sit_out
 from repo import get_repo
-from solver import solve
+from schedule import seat_fillable
+from solver import penalty, solve
 
 ORCHESTRATOR = {"type": "Service", "id": "orchestrator"}
 RUN_ROUTE = "ALL"
@@ -50,6 +56,54 @@ def _stats_from_formed(pool_size: int, formed: list[dict]) -> dict:
     }
 
 
+def fill_open_seats(repo, route: str, pool: list[dict], now: int) -> tuple[list[dict], list[dict]]:
+    """Offer each open third seat to the best-fitting pending student.
+
+    Returns (offers made, the pool that is left to solve). Seats go first: a cab
+    already agreed for two people is completed rather than left for the solver
+    to route around. The smallest penalty wins each seat, ties broken by the
+    earlier departure and then by id, and nobody is offered two seats. The
+    student must still accept, and can decline like any proposal.
+
+    Heuristic, not optimal: a student who takes a seat is unavailable to the
+    solver even if a better group existed for them.
+    """
+    fits = []
+    for g in repo.open_seat_groups(route):
+        T = g["departure_time"]
+        if not seat_fillable(T, now):
+            continue
+        for c in pool:
+            if c["student_id"] in g.get("excluded", []) or set(c.get("blocked_with", [])) & set(g["members"]):
+                continue
+            if not c["p"] - c["b"] <= T <= c["p"] + c["a"]:
+                continue
+            pen = penalty(c, T)
+            if pen <= CONFIG["p_cap"] + 1e-9:
+                fits.append((round(pen, 6), T, g["group_id"], c["student_id"], g))
+    fits.sort(key=lambda f: f[:4])
+
+    by_id = {c["student_id"]: c for c in pool}
+    offers, taken_groups, taken_students = [], set(), set()
+    for pen, T, group_id, student_id, g in fits:
+        if group_id in taken_groups or student_id in taken_students:
+            continue
+        members = [repo.get_request(m) for m in g["members"]]
+        candidate = by_id[student_id]
+        permitted = is_permitted(
+            ORCHESTRATOR, "FormGroup",
+            {"type": "Group", "id": group_id, "members": [*g["members"], student_id], "state": "FORMED",
+             "contains_blocked_pair": bool(set(candidate.get("blocked_with", [])) & set(g["members"]))})
+        if not permitted or any(m is None for m in members):
+            continue
+        explanation = explain(candidate, {**g, "members": [*g["members"], student_id]}, members, CONFIG)
+        repo.offer_seat(group_id, student_id, now + CONFIG["accept_window_minutes"] * 60, explanation)
+        taken_groups.add(group_id)
+        taken_students.add(student_id)
+        offers.append({"group_id": group_id, "student_id": student_id, "departure_time": T, "penalty": pen})
+    return offers, [c for c in pool if c["student_id"] not in taken_students]
+
+
 def release_route(repo, route: str, now: int) -> dict:
     # Order matters: revive first, so anyone marked SAT_OUT below sits out exactly this release.
     revived = repo.revive_sat_out(route)
@@ -58,6 +112,7 @@ def release_route(repo, route: str, now: int) -> dict:
     for sid in sat_out:
         repo.set_status(sid, "SAT_OUT")
     pool = [r for r in pool if r["student_id"] not in sat_out]
+    offers, pool = fill_open_seats(repo, route, pool, now)
     by_id = {r["student_id"]: r for r in pool}
     result = solve(pool, CONFIG) if pool else {"groups": [], "ungrouped": [], "stats": None}
 
@@ -107,7 +162,7 @@ def release_route(repo, route: str, now: int) -> dict:
     audit_key = None
     if pool:
         release = {"release_id": f"{route}-{now}-{uuid.uuid4().hex[:6]}", "route": route, "ran_at": now,
-                   "groups_rejected": rejected, "sat_out": len(sat_out), **stats}
+                   "groups_rejected": rejected, "sat_out": len(sat_out), "seats_offered": len(offers), **stats}
         repo.put_release(release)
         try:
             audit_key = repo.append_release_log(release, formed)
@@ -116,7 +171,7 @@ def release_route(repo, route: str, now: int) -> dict:
             traceback.print_exc(file=sys.stderr)
 
     return {"status": "released", "stats": stats, "groups_rejected": rejected,
-            "sat_out": sat_out, "revived": revived,
+            "sat_out": sat_out, "revived": revived, "seats": offers,
             "groups": [{"group_id": g["group_id"], "members": g["members"],
                         "departure_time": g["departure_time"]} for g in formed],
             "audit_log": audit_key}
