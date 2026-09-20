@@ -159,3 +159,44 @@ def test_stub_solver_respects_min_group_size_and_blocks():
 def test_stub_solver_is_deterministic():
     pool = pool_of((1000, 30, 30), (1010, 20, 20), (1020, 15, 30))
     assert solve(pool, CONFIG) == solve(list(reversed(pool)), CONFIG)
+
+
+# ---- the stored explanation is the solver's own arithmetic ----
+
+def test_each_member_gets_an_explanation_naming_no_one(repo):
+    triple(repo)
+    ro.run_release(repo, now=NOW)
+    g = repo.group_for("s1")
+    T = g["departure_time"]
+    for sid in ("s1", "s2", "s3"):
+        text = g["explanations"][sid]
+        r = repo.get_request(sid)
+        shift = abs(T - r["p"])
+        assert (f"{shift} minutes" in text) if shift else ("exactly when you asked" in text)
+        assert "2 others" in text and "3 ways" in text
+        # it says what the others gave up, and never who they are
+        assert "the others" in text
+        assert not any(other in text for other in ("s1", "s2", "s3"))
+
+
+def test_the_explanation_says_why_your_own_time_was_not_used(repo):
+    # s3 can leave no later than 5:10 pm, so s1's own 5:00 pm... is fine;
+    # it is s3 whose preferred 5:20 pm is outside s1's window.
+    add(repo, "s1", 1000, 30, 10)
+    add(repo, "s2", 1010, 30, 30)
+    add(repo, "s3", 1020, 30, 30)
+    ro.run_release(repo, now=NOW)
+    text = repo.group_for("s3")["explanations"]["s3"]
+    assert "Your exact time" in text
+
+
+def test_total_cost_counts_the_ungrouped_the_same_way_the_solver_does(repo):
+    triple(repo)
+    add(repo, "s9", 300, 15, 15)  # nowhere near the others: alone
+    out = ro.run_release(repo, now=NOW)["COLLEGE_AIRPORT"]
+    expected = solve([repo.get_request(s) for s in ("s1", "s2", "s3", "s9")], CONFIG)["stats"]["total_cost"]
+    assert out["stats"]["ungrouped"] == 1
+    assert out["stats"]["total_cost"] == pytest.approx(expected, abs=1e-3)
+    # and the recomputed path (a Cedar rejection) agrees on what the number means
+    formed = [repo.group_for(s) for s in ("s1",)]
+    assert ro._stats_from_formed(4, formed)["total_cost"] == pytest.approx(expected, abs=1e-3)

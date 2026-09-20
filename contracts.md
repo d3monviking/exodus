@@ -23,7 +23,7 @@ See `config.py` — `ROUTES`, `STATUSES`, `STATES`, `REASONS`. These are the onl
 }
 ```
 
-`b` and `a` are always at least 5. `blocked_with` is denormalised onto the request by the platform (`repo.py`) before the pool reaches the solver — the solver never queries anything.
+`b` and `a` are always at least 5, and `min_group_size` is 2 unless the student asked for a full cab (`POST /requests` accepts it, and a `TOO_FEW` decline sets it). `blocked_with` is denormalised onto the request by `repo.py` before the pool reaches the solver — the solver never queries anything.
 
 ## The solver — the whole seam
 
@@ -85,9 +85,11 @@ def should_sit_out(request: dict, config: dict) -> bool:
 | `increment_decline_count` | Counter on the request |
 | `add_anchor` | Append to `declined_anchors` |
 
-### `on_decline` payload — PROPOSED, needs the solver side's agreement
+`declined_anchors` is recorded but nothing reads it yet: the soft time anchor of architecture 7.5 is not implemented, and the decline budget is what guarantees the release loop terminates.
 
-The docs never defined `payload`. The platform passes exactly these keys, and drops anything else a client sends:
+### `on_decline` payload — agreed
+
+The architecture doc never defined `payload`. The API passes exactly these keys, and drops anything else a client sends:
 
 | Key | Set by | Meaning |
 | --- | --- | --- |
@@ -99,5 +101,16 @@ The docs never defined `payload`. The platform passes exactly these keys, and dr
 
 ## Who never touches what
 
-- The solver side never imports an AWS SDK, never does HTTP, never touches DynamoDB, never interprets a decline reason as a storage write.
-- The platform side never reasons about grouping or declines — it calls `solve()` and `on_decline()` and persists exactly what comes back.
+- The solver side (`solver.py`, `lifecycle.py`, `poolgen.py`, `explainer.py`, `advisor.py`) never imports an AWS SDK, never does HTTP, never touches DynamoDB, and never interprets a decline reason as a storage write. `advisor.advise()` is the one exception to "no I/O", and it only reads, through `Repo`.
+- The platform side never reasons about grouping or declines — it calls `solve()`, `on_decline()`, `explain()` and `advise()`, and persists exactly what comes back.
+
+## Explanations and advice
+
+Both are computed from the solver's own numbers, so they are exact and instant. No language model is involved anywhere in this codebase.
+
+```python
+explain(request, group, others, config) -> str   # explainer.py, called by the release
+advise(route, p, b, a, repo, student_id) -> dict # advisor.py, called by POST /advise
+```
+
+Neither ever names another student, and neither ever produces a clock time: minutes-since-midnight becomes a clock time once, in `web/index.html`.

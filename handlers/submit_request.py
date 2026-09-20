@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from cedar_authz import is_permitted
-from config import ROUTES
+from config import CONFIG, ROUTES
 from handlers._common import identify, parse_body, response
 from repo import get_repo
 
@@ -38,6 +38,9 @@ def handler(event, context):
         return response(400, {"error": "p must be minutes since midnight, 0-1439"})
     if not (5 <= body["b"] <= MAX_FLEX_MINUTES and 5 <= body["a"] <= MAX_FLEX_MINUTES):
         return response(400, {"error": f"b and a must each be between 5 and {MAX_FLEX_MINUTES}"})
+    if "min_group_size" in body and not (_is_int(body["min_group_size"])
+                                         and 2 <= body["min_group_size"] <= CONFIG["max_group"]):
+        return response(400, {"error": f"min_group_size must be an integer between 2 and {CONFIG['max_group']}"})
 
     repo = get_repo()
     existing = repo.get_request(who["id"])
@@ -50,7 +53,8 @@ def handler(event, context):
         "p": body["p"],
         "b": body["b"],
         "a": body["a"],
-        "min_group_size": (existing or {}).get("min_group_size", 2),
+        # a student may ask for a full cab up front; a TOO_FEW decline sets it later
+        "min_group_size": body.get("min_group_size", (existing or {}).get("min_group_size", 2)),
         "status": "SAT_OUT" if (existing or {}).get("status") == "SAT_OUT" else "PENDING",
         "decline_count": (existing or {}).get("decline_count", 0),
         "declined_anchors": (existing or {}).get("declined_anchors", []),

@@ -79,3 +79,22 @@ def test_contacts_only_after_confirmed_and_only_for_members(repo):
     repo.set_group_state("g1", "CONFIRMED")
     assert call(get_my_request, ME)[1]["proposal"]["contacts"] == ["imt2022002@iiitb.ac.in"]
     assert call(get_my_request, "imt2022555@iiitb.ac.in")[1]["proposal"] is None
+
+
+def test_a_student_may_ask_for_a_full_cab_up_front(repo):
+    status, body = call(submit_request, ME, {**GOOD, "min_group_size": 3})
+    assert status == 201 and body["min_group_size"] == 3
+    assert repo.get_request("imt2022001")["min_group_size"] == 3
+
+
+def test_min_group_size_defaults_to_two_and_is_validated(repo):
+    assert call(submit_request, ME, GOOD)[1]["min_group_size"] == 2
+    for bad in (1, 4, "three", True):
+        status, out = call(submit_request, ME, {**GOOD, "min_group_size": bad})
+        assert status == 400 and "min_group_size" in out["error"]
+
+
+def test_a_resubmission_keeps_an_earlier_full_cab_preference(repo):
+    call(submit_request, ME, {**GOOD, "min_group_size": 3})
+    # the form need not send it again; a TOO_FEW decline sets it the same way
+    assert call(submit_request, ME, GOOD)[1]["min_group_size"] == 3

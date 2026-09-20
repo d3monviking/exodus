@@ -17,7 +17,7 @@ import uuid
 
 from cedar_authz import is_permitted
 from config import CONFIG, ROUTES
-from explain_templated import explain
+from explainer import explain
 from handlers._common import response
 from lifecycle import should_sit_out
 from repo import get_repo
@@ -32,14 +32,21 @@ def _has_blocked_pair(member_ids: list[str], by_id: dict[str, dict]) -> bool:
 
 
 def _stats_from_formed(pool_size: int, formed: list[dict]) -> dict:
+    """Stats recomputed when the solver's own can't be used (a Cedar rejection).
+
+    total_cost must mean what solve() means by it — the whole objective,
+    upsilon per ungrouped student included — or the Releases table would hold
+    two different measures in one column.
+    """
     grouped = sum(len(g["members"]) for g in formed)
+    ungrouped = pool_size - grouped
     return {
         "pool_size": pool_size,
         "groups_of_3": sum(1 for g in formed if len(g["members"]) == 3),
         "groups_of_2": sum(1 for g in formed if len(g["members"]) == 2),
-        "ungrouped": pool_size - grouped,
+        "ungrouped": ungrouped,
         "cabs_saved": grouped - len(formed),
-        "total_cost": round(sum(g["cost"] for g in formed), 4),
+        "total_cost": round(sum(g["cost"] for g in formed) + CONFIG["upsilon"] * ungrouped, 4),
     }
 
 
@@ -83,7 +90,9 @@ def release_route(repo, route: str, now: int) -> dict:
             "penalties": g["penalties"],
             "cost": g["cost"],
         }
-        record["explanations"] = {m: explain(by_id[m], record) for m in members}
+        record["explanations"] = {
+            m: explain(by_id[m], record, [by_id[o] for o in members if o != m], CONFIG) for m in members
+        }
         repo.put_group(record)
         formed.append(record)
 

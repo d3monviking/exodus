@@ -47,6 +47,17 @@ Resources:
             Path: /requests/me
             Method: get
 
+  AdviseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers.advise.handler
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /advise
+            Method: post
+
   GetBoardFunction:
     Type: AWS::Serverless::Function
     Properties:

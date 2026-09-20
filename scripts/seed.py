@@ -7,8 +7,7 @@ Stdlib only. Deterministic for a given --seed, so rehearsals are repeatable.
   scripts/seed.py --count 40 --seed 3   # the demo pool
 
 Any other pool comes from poolgen, the same generator the solver is tuned on,
-so a seeded board shows exactly what `scripts/sweep.py --as-submitted` reports
-for that seed. Only route, p, b and a are sent: that's all POST /requests takes.
+so a seeded board shows exactly what `scripts/sweep.py` reports for that seed.
 """
 
 from __future__ import annotations
@@ -30,12 +29,14 @@ ROUTES = ["COLLEGE_AIRPORT", "COLLEGE_STATION", "AIRPORT_COLLEGE", "STATION_COLL
 def make_requests(count: int, route: str, seed: int, first_id: int) -> list[tuple[str, dict]]:
     if count == 3 and seed == 0:
         # hand-picked so the three windows overlap: a triple leaving at 5:10 pm (1030)
-        spec = [(1020, 30, 30), (1030, 20, 20), (1040, 15, 30)]
+        spec = [(1020, 30, 30, 2), (1030, 20, 20, 2), (1040, 15, 30, 2)]
     else:
-        spec = [(r["p"], r["b"], r["a"]) for r in generate(count, route, seed, first_id=first_id)]
+        spec = [(r["p"], r["b"], r["a"], r["min_group_size"])
+                for r in generate(count, route, seed, first_id=first_id)]
     return [
-        (f"imt2022{first_id + i}@iiitb.ac.in", {"route": route, "p": p, "b": b, "a": a})
-        for i, (p, b, a) in enumerate(spec)
+        (f"imt2022{first_id + i}@iiitb.ac.in",
+         {"route": route, "p": p, "b": b, "a": a, "min_group_size": m})
+        for i, (p, b, a, m) in enumerate(spec)
     ]
 
 
