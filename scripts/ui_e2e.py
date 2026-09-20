@@ -11,6 +11,8 @@ each polling the real API like a real user.
 
 Needs the full stack (LocalStack + sam local on :3000 + `python3 -m http.server
 8080 --directory web`), empty tables, and dev deps (playwright; uses system Chrome).
+Set EXODUS_WEB / EXODUS_API if those ports are taken, e.g.
+EXODUS_WEB=http://127.0.0.1:8090/ when something else already has 8080.
 Also asserts the picker's payload values are the REASONS enum strings.
 """
 
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -28,7 +31,8 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 from config import REASONS  # noqa: E402
 from seed import make_requests, post  # noqa: E402
 
-API, WEB = "http://127.0.0.1:3000", "http://127.0.0.1:8080/"
+API = os.environ.get("EXODUS_API", "http://127.0.0.1:3000")
+WEB = os.environ.get("EXODUS_WEB", "http://127.0.0.1:8080/")
 SHOTS = os.environ.get("SHOT_DIR")
 failures = 0
 
@@ -79,9 +83,11 @@ def main() -> int:
         for pg in (p1, p2, p3):
             pg.wait_for_selector("#proposal .proposal h2", timeout=15000)
         check("all three see a proposed group", all("Proposed group" in pg.inner_text("#proposal") for pg in (p1, p2, p3)))
-        check("proposal shows departure, size, explanation", "5:10 pm" in p1.inner_text("#proposal") and "Why" in p1.inner_text("#proposal"))
+        # the time itself is the solver's business, so match its shape, not a value
+        text = p1.inner_text("#proposal")
+        check("proposal shows departure, size, explanation",
+              bool(re.search(r"\d{1,2}:\d{2} [ap]m", text)) and "Why" in text and "fare" in text, text[:200])
         check("a response deadline is counting down", "Respond within" in p1.inner_text("#deadline"))
-        import re
         p1.wait_for_function(r"/^\d+:\d\d$|due any moment/.test(document.getElementById('countdown').textContent.trim())", timeout=5000)
         check("board shows a live countdown to the next release",
               bool(re.fullmatch(r"\d+:\d\d|due any moment", p1.inner_text("#countdown").strip())), p1.inner_text("#countdown"))
