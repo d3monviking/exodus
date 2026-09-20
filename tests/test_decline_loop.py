@@ -208,8 +208,9 @@ def test_the_proposal_names_the_other_members(repo, grouped):
     ev = {"headers": {"X-Student-Email": EMAIL["imt2022001"]}}
     p = json.loads(get_my_request.handler(ev, None)["body"])["proposal"]
     # you can only decline "not with this person" if you know who they are
-    assert p["others"] == [{"student_id": "imt2022002", "email": "imt2022002@iiitb.ac.in"},
-                           {"student_id": "imt2022003", "email": "imt2022003@iiitb.ac.in"}]
+    assert [(o["student_id"], o["email"]) for o in p["others"]] == [
+        ("imt2022002", "imt2022002@iiitb.ac.in"), ("imt2022003", "imt2022003@iiitb.ac.in")]
+    assert all(o["name"] for o in p["others"])  # from the roster
     assert p["accepted"] == 0
     call("imt2022002", grouped, {"action": "accept"})
     assert json.loads(get_my_request.handler(ev, None)["body"])["proposal"]["accepted"] == 1

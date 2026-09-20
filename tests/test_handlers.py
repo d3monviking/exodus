@@ -82,7 +82,10 @@ def test_the_proposal_names_the_other_members(repo):
     repo.put_group({"group_id": "g1", "route": "COLLEGE_AIRPORT", "members": ["imt2022001", "imt2022002"],
                     "departure_time": 1000, "state": "FORMED", "responses": {}})
     p = call(get_my_request, ME)[1]["proposal"]
-    assert p["others"] == [{"student_id": "imt2022002", "email": "imt2022002@iiitb.ac.in"}]
+    import roster
+    assert p["others"] == [{"student_id": "imt2022002", "name": roster.name_for("imt2022002"),
+                            "email": "imt2022002@iiitb.ac.in"}]
+    assert p["others"][0]["name"]  # the shipped roster knows this one
 
 
 def test_a_non_member_is_told_nothing_about_a_group(repo):
@@ -110,3 +113,9 @@ def test_a_resubmission_keeps_an_earlier_full_cab_preference(repo):
     call(submit_request, ME, {**GOOD, "min_group_size": 3})
     # the form need not send it again; a TOO_FEW decline sets it the same way
     assert call(submit_request, ME, GOOD)[1]["min_group_size"] == 3
+
+
+def test_me_carries_the_callers_own_name(repo):
+    import roster
+    body = call(get_my_request, ME)[1]
+    assert body["me"] == {"student_id": "imt2022001", "name": roster.name_for("imt2022001"), "email": ME}

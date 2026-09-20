@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 from config import REASONS  # noqa: E402
+from roster import name_for  # noqa: E402
 from seed import make_requests, post  # noqa: E402
 
 API = os.environ.get("EXODUS_API", "http://127.0.0.1:3000")
@@ -83,6 +84,10 @@ def main() -> int:
         for pg in (p1, p2, p3):
             pg.wait_for_selector("#proposal .proposal h2", timeout=15000)
         check("all three see a proposed group", all("Proposed group" in pg.inner_text("#proposal") for pg in (p1, p2, p3)))
+        check("the cab lists who you're travelling with, by name",
+              all(name_for(f"imt20221{n:02d}") in p1.inner_text("#proposal") for n in (2, 3)), p1.inner_text("#proposal"))
+        check("the header greets you by name", name_for("imt2022101") in p1.inner_text("#who-line"),
+              p1.inner_text("#who-line"))
         # the time itself is the solver's business, so match its shape, not a value
         text = p1.inner_text("#proposal")
         check("proposal shows departure, size, explanation",
@@ -103,6 +108,8 @@ def main() -> int:
         p1.wait_for_selector("[data-student]")
         offered_people = p1.eval_on_selector_all("[data-student]", "e => e.map(x => x.dataset.student)")
         check("the picker names the other two members", offered_people == ["imt2022102", "imt2022103"], str(offered_people))
+        labels = p1.eval_on_selector_all("[data-student]", "e => e.map(x => x.textContent)")
+        check("and shows their roster names", all(name_for(s) in l for s, l in zip(offered_people, labels)), str(labels))
         p1.click('[data-student="imt2022103"]')
         p1.wait_for_function("document.getElementById('notice').textContent.includes('declined') && "
                              "document.getElementById('status').textContent.includes('PENDING')", timeout=15000)

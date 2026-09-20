@@ -257,8 +257,15 @@ function row(dl, term, value) {
   dl.append(el("dt", {}, term), el("dd", {}, value));
 }
 
+// Names come from the college roster; someone missing from it is known by
+// their roll number alone.
+function personLabel(o) {
+  return o.name ? `${o.name} (${o.student_id})` : o.student_id;
+}
+
 function render(next) {
   const key = JSON.stringify(next);
+  if (next && next.me && next.me.name) $("who").textContent = `${next.me.name} (${next.me.student_id})`;
   if (key === lastKey) return;
   lastKey = key;
 
@@ -315,7 +322,7 @@ function renderProposal() {
   row(dl, "Group size", String(p.size));
   if (p.explanation) row(dl, "Why", p.explanation);
   if (p.others && p.others.length)
-    row(dl, "Travelling with", p.others.map((o) => o.student_id).join(", ")
+    row(dl, "Travelling with", p.others.map(personLabel).join(", ")
         + (confirmed ? ` — ${p.others.map((o) => o.email).join(", ")}` : ""));
   box.append(el("div", { class: "proposal" }, el("h2", {}, confirmed ? "Your cab is confirmed" : "Proposed group"), dl));
   if (confirmed) return;
@@ -360,7 +367,7 @@ function renderActions(p) {
     for (const other of p.others) {
       picker.append(el("button", { type: "button", class: "secondary opt", "data-student": other.student_id,
         onclick: () => respond({ action: "decline", reason: "PERSON", payload: { named_student_id: other.student_id } }) },
-        other.student_id));
+        personLabel(other)));
     }
     picker.append(el("div", { class: "actions" }, back("reason")));
   } else if (flow.step === "time") {
@@ -499,7 +506,7 @@ async function poll() {
 function enter(addr) {
   email = addr;
   $("signin").classList.add("hidden");
-  $("who").textContent = addr;
+  $("who").textContent = addr;  // replaced by the roster name once /requests/me answers
   $("who-line").classList.remove("hidden");
   buildForm();
   $("form-card").classList.remove("hidden");

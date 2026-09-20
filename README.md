@@ -15,7 +15,7 @@ Everything runs on one laptop with no AWS account: SAM CLI hosts the Lambda hand
 
 Before submitting, a student can ask `POST /advise` how their window will fare: it runs the real solver on the current pool plus their hypothetical request and answers concretely — *with ±15 you would travel alone; ±45 puts you in a cab leaving 35 minutes earlier, 78% of your flexibility*. Every proposal also carries an explanation of the trade it made. Both come from the solver's arithmetic; there is no language model anywhere in this codebase.
 
-A proposal names the other members by roll number and email: you can't sensibly decline "not with this person" without knowing who they are. Cedar decides that only members of a group may see who else is in it.
+A proposal names the other members — name and roll number, from `roster.csv` — because you can't sensibly decline "not with this person" without knowing who they are. Cedar decides that only members of a group may see who else is in it. Names are display only: nothing matches, groups or authorises on them, and a student missing from the roster is shown by roll number alone.
 
 ## Prerequisites
 
@@ -83,6 +83,7 @@ The three scripts need the stack running and **empty tables** (`create_tables.py
 | `explainer.py` | why a student got the group they got, from the solver's own numbers |
 | `advisor.py` | what a window is likely to get you, by running the solver on the pool plus a hypothetical request |
 | `poolgen.py` | seeded synthetic pools that look like an end-of-semester evening |
+| `roster.py`, `roster.csv` | roll number to name, the mapping a college would own; override the path with `ROSTER_FILE` |
 | `handlers/` | Lambda handlers: `submit_request`, `get_my_request`, `get_board`, `advise`, `respond`, `release_orchestrator`, `lifecycle_sweep`; `_decline.py` is the one path every decline takes |
 | `policies.cedar`, `cedar_authz.py` | the four policies, and `is_permitted()`, the only code that talks to Cedar (fails closed) |
 | `repo.py`, `repo_dynamo.py` | the data layer: a JSON-file `FakeRepo` and the real `DynamoRepo`, one interface |
@@ -98,7 +99,7 @@ Every time in every body is minutes since midnight. Identity is the `X-Student-E
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | `POST` | `/requests` | `{route, p, b, a, min_group_size?}` | `201` the stored request |
-| `GET` | `/requests/me` | — | `{request, proposal}`; the proposal carries its explanation and names the other members |
+| `GET` | `/requests/me` | — | `{me, request, proposal}`; the proposal carries its explanation and names the other members |
 | `POST` | `/advise` | `{route, p, b, a}` | `{message, simulated_outcome, pool, better_window}` |
 | `POST` | `/groups/{id}/respond` | `{action: "accept" or "decline", reason?, payload?}` | `200 {state, ...}` |
 | `GET` | `/board` | — | countdown, per-route pool size and last release |
