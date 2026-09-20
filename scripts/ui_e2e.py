@@ -91,6 +91,7 @@ def main() -> int:
             page.on("response", lambda r: bad_http.append((r.status, r.url)) if r.status >= 400 and "3000" in r.url else None)
             page.goto(WEB)
             page.fill("#email", f"imt2022{n}@iiitb.ac.in")
+            page.fill("#password", "any-password-works")  # front-end only; the page never sends it
             page.click("#signin-btn")
             return page
 
