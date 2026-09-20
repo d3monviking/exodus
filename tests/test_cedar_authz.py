@@ -40,16 +40,17 @@ def test_non_member_may_not_respond():
 
 
 # policy 3
-def test_contacts_hidden_until_confirmed():
-    assert not is_permitted(STUDENT, "ViewContactDetails", group(state="FORMED"))
+def test_members_see_each_other_as_soon_as_a_group_is_proposed():
+    assert is_permitted(STUDENT, "ViewContactDetails", group(state="FORMED"))
 
 
-def test_contacts_visible_to_member_once_confirmed():
+def test_members_still_see_each_other_once_confirmed():
     assert is_permitted(STUDENT, "ViewContactDetails", group(state="CONFIRMED"))
 
 
-def test_contacts_hidden_from_non_member_even_when_confirmed():
+def test_a_non_member_never_sees_who_is_in_a_group():
     stranger = {"id": "imt2022099", "email": "imt2022099@iiitb.ac.in"}
+    assert not is_permitted(stranger, "ViewContactDetails", group(state="FORMED"))
     assert not is_permitted(stranger, "ViewContactDetails", group(state="CONFIRMED"))
 
 

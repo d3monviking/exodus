@@ -2,7 +2,7 @@
 """
 Gate 2, end to end over HTTP: the loop closes.
 
-  seed 3 -> release -> one member declines "not with this person" -> the group
+  seed 3 -> release -> one member declines "not with this person" by name -> the group
   dissolves and everyone is back in the pool -> next release routes around the
   block -> the remaining pair accepts -> CONFIRMED, contacts revealed.
 
@@ -62,15 +62,15 @@ def main() -> int:
     _, rel = call(api, "POST", "/internal/release?force=1")
     check("one triple formed", rel["COLLEGE_AIRPORT"]["stats"]["groups_of_3"] == 1)
     p = mine(e1)["proposal"]
-    check("proposal is FORMED, size 3, with handles not identities",
-          p["state"] == "FORMED" and p["size"] == 3 and p["others"] == ["1", "2"] and p["contacts"] is None)
+    check("proposal is FORMED, size 3, naming the other two",
+          p["state"] == "FORMED" and p["size"] == 3
+          and [o["student_id"] for o in p["others"]] == ["imt2022102", "imt2022103"], json.dumps(p.get("others")))
     gid = p["group_id"]
 
-    print("2. imt2022101 declines: 'not with this person' (handle 2 = imt2022103)")
+    print("2. imt2022101 declines: 'not with this person' (imt2022103)")
     code, body = call(api, "POST", f"/groups/{gid}/respond", e1,
-                      {"action": "decline", "reason": "PERSON", "payload": {"named_student_id": "2"}})
+                      {"action": "decline", "reason": "PERSON", "payload": {"named_student_id": "imt2022103"}})
     check("decline accepted, group DISSOLVED", code == 200 and body["state"] == "DISSOLVED", str(body))
-    check("response leaks no identity", "imt2022103" not in json.dumps(body))
     check("everyone is back in the pool",
           all(mine(e)["request"]["status"] == "PENDING" and mine(e)["proposal"] is None for e in (e1, e2, e3)))
     _, board = call(api, "GET", "/board")
@@ -94,8 +94,9 @@ def main() -> int:
     _, body = call(api, "POST", f"/groups/{gid2}/respond", partner, {"action": "accept"})
     check("group CONFIRMED", body.get("state") == "CONFIRMED", str(body))
     after = mine(e1)
-    check("101 is CONFIRMED and now sees the partner's contact",
-          after["request"]["status"] == "CONFIRMED" and after["proposal"]["contacts"] == [partner], str(after["proposal"]))
+    check("101 is CONFIRMED, with the partner's contact",
+          after["request"]["status"] == "CONFIRMED"
+          and [o["email"] for o in after["proposal"]["others"]] == [partner], str(after["proposal"]))
     left_out = e3 if partner == e2 else e2
     check("the left-out student is still PENDING, no proposal",
           mine(left_out)["request"]["status"] == "PENDING" and mine(left_out)["proposal"] is None)

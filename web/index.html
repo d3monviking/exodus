@@ -314,7 +314,9 @@ function renderProposal() {
   row(dl, "Departs", fromMinutes(p.departure_time));
   row(dl, "Group size", String(p.size));
   if (p.explanation) row(dl, "Why", p.explanation);
-  if (p.contacts) row(dl, "Travelling with", p.contacts.join(", "));
+  if (p.others && p.others.length)
+    row(dl, "Travelling with", p.others.map((o) => o.student_id).join(", ")
+        + (confirmed ? ` — ${p.others.map((o) => o.email).join(", ")}` : ""));
   box.append(el("div", { class: "proposal" }, el("h2", {}, confirmed ? "Your cab is confirmed" : "Proposed group"), dl));
   if (confirmed) return;
 
@@ -354,11 +356,11 @@ function renderActions(p) {
     }
     picker.append(el("div", { class: "actions" }, back(null)));
   } else if (flow.step === "person") {
-    picker.append(el("p", {}, "Who? Members stay anonymous until the cab is confirmed."));
-    for (const handle of p.others) {
-      picker.append(el("button", { type: "button", class: "secondary opt", "data-handle": handle,
-        onclick: () => respond({ action: "decline", reason: "PERSON", payload: { named_student_id: handle } }) },
-        `Member ${handle}`));
+    picker.append(el("p", {}, "Who? You won't be grouped with them again."));
+    for (const other of p.others) {
+      picker.append(el("button", { type: "button", class: "secondary opt", "data-student": other.student_id,
+        onclick: () => respond({ action: "decline", reason: "PERSON", payload: { named_student_id: other.student_id } }) },
+        other.student_id));
     }
     picker.append(el("div", { class: "actions" }, back("reason")));
   } else if (flow.step === "time") {

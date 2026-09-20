@@ -1,6 +1,8 @@
 """
 POST /groups/{id}/respond   body: {"action": "accept"}
                                   {"action": "decline", "reason": "TIME", "payload": {"b": 60}}
+                                  {"action": "decline", "reason": "PERSON",
+                                   "payload": {"named_student_id": "imt2022103"}}
 
 Accepting locks the member in; the group is CONFIRMED once everyone has. A
 decline dissolves the whole group (consent doesn't survive a change to the
@@ -23,7 +25,6 @@ MAX_FLEX_MINUTES = 240
 
 
 def other_members(group: dict, me: str) -> list[str]:
-    """Stable order, so opaque handle "1" always means the same member of a given group."""
     return sorted(m for m in group["members"] if m != me)
 
 
@@ -35,13 +36,13 @@ def _clean_payload(raw: dict, group: dict, me: str) -> tuple[dict | None, str | 
     payload: dict = {}
 
     if "named_student_id" in raw:
-        # Members are anonymous until CONFIRMED (Cedar policy 3), so the client can
-        # only name one by handle. Resolve it here; never accept a raw student id.
+        # A real id, but only one of this group's other members: blocking is
+        # pair-scoped, and nobody may block a stranger they never travelled with.
         others = other_members(group, me)
-        handle = raw["named_student_id"]
-        if not (isinstance(handle, str) and handle.isdigit() and 1 <= int(handle) <= len(others)):
-            return None, f"named_student_id must be one of {[str(i + 1) for i in range(len(others))]}"
-        payload["named_student_id"] = others[int(handle) - 1]
+        named = raw["named_student_id"]
+        if named not in others:
+            return None, f"named_student_id must be one of {others}"
+        payload["named_student_id"] = named
 
     for key in ("b", "a"):
         if key in raw:
@@ -110,7 +111,6 @@ def handler(event, context):
         apply_decline(repo, group, who["id"], reason, payload)
         repo.record_response(group_id, who["id"], False)
         repo.dissolve(group_id, reason=reason, declined_by=who["id"])
-        # The delta is deliberately not returned: it can contain a real student id.
         return response(200, {"state": "DISSOLVED", "reason": reason})
 
     return response(400, {"error": "action must be 'accept' or 'decline'"})

@@ -15,6 +15,13 @@ CONFIG = {
     "min_release_gap_seconds": 10,  # a route can't be released twice within this window
 }
 
+EMAIL_DOMAIN = "iiitb.ac.in"
+
+# Roll numbers: imt2022001 (iMTech), mt2023045 (MTech), ms..., phd... The domain
+# rule lives in Cedar; this is the shape of the name in front of the @, which a
+# `like` pattern can't express.
+STUDENT_ID_RE = r"^(imt|mt|ms|phd)\d{7}$"
+
 ROUTES = [
     "COLLEGE_AIRPORT",
     "COLLEGE_STATION",

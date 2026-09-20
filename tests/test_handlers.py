@@ -35,7 +35,13 @@ def test_body_student_id_is_ignored(repo):
     assert repo.get_request("victim") is None
 
 
-@pytest.mark.parametrize("email,code", [(None, 401), ("bob@gmail.com", 403), ("x@iiitb.ac.in.evil.com", 403)])
+@pytest.mark.parametrize("email,code", [
+    (None, 401),                                # no header
+    ("hello@iiitb.ac.in", 401),                 # right domain, not a roll number
+    ("imt2022001", 401),                        # not an address
+    ("imt2022001@gmail.com", 403),              # a roll number, wrong domain (Cedar)
+    ("imt2022001@iiitb.ac.in.evil.com", 403),   # the domain must be the ending
+])
 def test_identity_and_domain_rules(repo, email, code):
     assert call(submit_request, email, GOOD)[0] == code
 
@@ -70,15 +76,21 @@ def test_me_never_leaks_blocked_with(repo):
     assert status == 200 and "blocked_with" not in body["request"]
 
 
-def test_contacts_only_after_confirmed_and_only_for_members(repo):
+def test_the_proposal_names_the_other_members(repo):
     for sid in ("imt2022001", "imt2022002"):
         call(submit_request, f"{sid}@iiitb.ac.in", GOOD)
     repo.put_group({"group_id": "g1", "route": "COLLEGE_AIRPORT", "members": ["imt2022001", "imt2022002"],
                     "departure_time": 1000, "state": "FORMED", "responses": {}})
-    assert call(get_my_request, ME)[1]["proposal"]["contacts"] is None
-    repo.set_group_state("g1", "CONFIRMED")
-    assert call(get_my_request, ME)[1]["proposal"]["contacts"] == ["imt2022002@iiitb.ac.in"]
-    assert call(get_my_request, "imt2022555@iiitb.ac.in")[1]["proposal"] is None
+    p = call(get_my_request, ME)[1]["proposal"]
+    assert p["others"] == [{"student_id": "imt2022002", "email": "imt2022002@iiitb.ac.in"}]
+
+
+def test_a_non_member_is_told_nothing_about_a_group(repo):
+    for sid in ("imt2022001", "imt2022002", "imt2022099"):
+        call(submit_request, f"{sid}@iiitb.ac.in", GOOD)
+    repo.put_group({"group_id": "g1", "route": "COLLEGE_AIRPORT", "members": ["imt2022001", "imt2022002"],
+                    "departure_time": 1000, "state": "FORMED", "responses": {}})
+    assert call(get_my_request, "imt2022099@iiitb.ac.in")[1]["proposal"] is None
 
 
 def test_a_student_may_ask_for_a_full_cab_up_front(repo):

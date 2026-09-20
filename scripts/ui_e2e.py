@@ -3,7 +3,7 @@
 Browser end-to-end for the board: real Chrome, one isolated session per student,
 each polling the real API like a real user.
 
-  A. three students grouped; one declines "not with this person" via the picker;
+  A. three students grouped; one declines "not with this person" by name;
      the others are told their group dissolved; the next release pairs two of
      them; both accept and see the confirmed cab and each other's contact.
   B. widen-my-window decline updates the request; a plans-changed decline
@@ -100,9 +100,10 @@ def main() -> int:
         check("picker sends exactly the REASONS enum strings", offered == [r for r in REASONS if r != "TIMEOUT"], str(offered))
         shot(p1, "picker.png")
         p1.click('[data-reason="PERSON"]')
-        p1.wait_for_selector("[data-handle]")
-        check("members are offered as anonymous handles", p1.eval_on_selector_all("[data-handle]", "e => e.map(x => x.textContent)") == ["Member 1", "Member 2"])
-        p1.click('[data-handle="2"]')
+        p1.wait_for_selector("[data-student]")
+        offered_people = p1.eval_on_selector_all("[data-student]", "e => e.map(x => x.dataset.student)")
+        check("the picker names the other two members", offered_people == ["imt2022102", "imt2022103"], str(offered_people))
+        p1.click('[data-student="imt2022103"]')
         p1.wait_for_function("document.getElementById('notice').textContent.includes('declined') && "
                              "document.getElementById('status').textContent.includes('PENDING')", timeout=15000)
         check("decliner sees a confirmation and is PENDING again",
@@ -127,7 +128,7 @@ def main() -> int:
             pg.wait_for_function("document.querySelector('#proposal h2').textContent.includes('confirmed') && "
                                  "document.getElementById('status').textContent.includes('CONFIRMED')", timeout=15000)
         check("both see the confirmed cab", all("CONFIRMED" in pg.inner_text("#status") for pg in (p1, p2)))
-        check("contacts are revealed only now", "imt2022102@iiitb.ac.in" in p1.inner_text("#proposal")
+        check("each sees the other's contact", "imt2022102@iiitb.ac.in" in p1.inner_text("#proposal")
               and "imt2022101@iiitb.ac.in" in p2.inner_text("#proposal"))
         check("the form is gone once confirmed", p1.is_hidden("#form-card"))
         shot(p1, "confirmed.png")

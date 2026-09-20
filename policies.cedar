@@ -9,9 +9,10 @@ permit(principal, action == Action::"CreateRequest", resource)
 permit(principal, action == Action::"RespondToProposal", resource)
   when { principal in resource.members };
 
-// 3. Other members' contact details are visible only once the group is CONFIRMED.
+// 3. Members of a group may see who else is in it. You can't reasonably decline
+//    "not with this person" without knowing who the people are.
 permit(principal, action == Action::"ViewContactDetails", resource)
-  when { principal in resource.members && resource.state == "CONFIRMED" };
+  when { principal in resource.members };
 
 // 4. A group containing a blocked pair may never be formed. The permit is
 // what the forbid subtracts from -- without it every group would be denied.

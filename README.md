@@ -8,14 +8,14 @@ Everything runs on one laptop with no AWS account: SAM CLI hosts the Lambda hand
 
 ## How it works
 
-1. A student signs in with an `@iiitb.ac.in` address, picks a route from fixed dropdowns, and gives a preferred departure time plus how much *earlier* and *later* they'll accept.
+1. A student signs in with an `@iiitb.ac.in` roll-number address (`imt2022001@…`; `hello@iiitb.ac.in` is nobody), picks a route from fixed dropdowns, and gives a preferred departure time plus how much *earlier* and *later* they'll accept.
 2. A timer fires a **release**. For each route the solver partitions the whole pending pool into groups. Each group becomes a `FORMED` proposal with a departure time and an accept deadline.
 3. Every member accepts or declines. When all accept, the group is `CONFIRMED` and members see each other's contact. **One decline dissolves the whole group**, records why, and returns everyone to the pool.
 4. Silence past the deadline counts as a `TIMEOUT` decline. A student who keeps declining without changing anything sits out one release, so the loop always terminates.
 
 Before submitting, a student can ask `POST /advise` how their window will fare: it runs the real solver on the current pool plus their hypothetical request and answers concretely — *with ±15 you would travel alone; ±45 puts you in a cab leaving 35 minutes earlier, 78% of your flexibility*. Every proposal also carries an explanation of the trade it made. Both come from the solver's arithmetic; there is no language model anywhere in this codebase.
 
-Members are anonymous until the cab is confirmed; a "not with this person" decline names someone by an opaque handle.
+A proposal names the other members by roll number and email: you can't sensibly decline "not with this person" without knowing who they are. Cedar decides that only members of a group may see who else is in it.
 
 ## Prerequisites
 
@@ -98,7 +98,7 @@ Every time in every body is minutes since midnight. Identity is the `X-Student-E
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | `POST` | `/requests` | `{route, p, b, a, min_group_size?}` | `201` the stored request |
-| `GET` | `/requests/me` | — | `{request, proposal}`, the proposal carrying its explanation |
+| `GET` | `/requests/me` | — | `{request, proposal}`; the proposal carries its explanation and names the other members |
 | `POST` | `/advise` | `{route, p, b, a}` | `{message, simulated_outcome, pool, better_window}` |
 | `POST` | `/groups/{id}/respond` | `{action: "accept" or "decline", reason?, payload?}` | `200 {state, ...}` |
 | `GET` | `/board` | — | countdown, per-route pool size and last release |
@@ -128,7 +128,7 @@ The grouping logic and the platform meet only at [`contracts.md`](contracts.md),
 
 ## Limitations
 
-- **Sign-in is not real.** Identity is the unverified `X-Student-Email` header, so anyone who can reach the API can act as any `@iiitb.ac.in` student. `start_api.sh` binds `127.0.0.1` only for this reason. Don't expose it.
+- **Sign-in is not real.** Identity is the unverified `X-Student-Email` header: the address must be an IIITB roll number (`imt|mt|ms|phd` + 7 digits) at `iiitb.ac.in`, but nothing proves it is yours, so anyone who can reach the API can act as any student. `start_api.sh` binds `127.0.0.1` only for this reason. Don't expose it.
 - **Releases come from a timer loop**, not EventBridge. LocalStack can fire schedules, but it can't invoke a function hosted by `sam local start-api`. The handlers accept both event shapes, so nothing changes if they're deployed to AWS later.
 - **The board's "last release" figure** is the most recent release on the route, so it can drop after a later, smaller one.
 - **Soft time anchors are not implemented.** A time-based decline records `(departure_time, group_size)` in `declined_anchors`, and the solver ignores it. Termination is guaranteed by the decline budget instead: two declines that change nothing and the student sits out a release.

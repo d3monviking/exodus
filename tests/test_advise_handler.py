@@ -67,7 +67,11 @@ def test_no_identity_is_401(repo):
 
 
 def test_a_non_college_address_may_not_ask(repo):
-    assert call("someone@gmail.com", GOOD)[0] == 403
+    assert call("imt2022001@gmail.com", GOOD)[0] == 403  # Cedar: wrong domain
+
+
+def test_an_address_that_is_not_a_roll_number_is_nobody(repo):
+    assert call("hello@iiitb.ac.in", GOOD)[0] == 401
 
 
 @pytest.mark.parametrize("body, missing", [

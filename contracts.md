@@ -93,7 +93,7 @@ The architecture doc never defined `payload`. The API passes exactly these keys,
 
 | Key | Set by | Meaning |
 | --- | --- | --- |
-| `named_student_id` | client, validated | A real student id. Members are anonymous until CONFIRMED, so the client sends an opaque handle ("1", "2", ...) and the platform resolves it to the id before calling `on_decline`. |
+| `named_student_id` | client, validated | The student being blocked. Must be another member of the group being declined: blocking is pair-scoped, so nobody can block a stranger they never travelled with. |
 | `b`, `a` | client, validated (int, 5-240) | A proposed new window. `on_decline` decides whether it counts as a widening. |
 | `departure_time`, `group_size` | **platform only** | The declined group's facts, always overwriting anything the client sent, so a client can't forge an anchor. |
 

@@ -122,67 +122,67 @@ def lifecycle_scenarios() -> None:
     one scenario is ever feasible with another's.
     """
     route = "STATION_COLLEGE"
-    trios = {"widen": (360, "w"), "budget": (480, "x"), "toofew": (600, "y"), "plans": (720, "z")}
-    for name, (centre, prefix) in trios.items():
+    trios = {"widen": (360, 1), "budget": (480, 11), "toofew": (600, 21), "plans": (720, 31)}
+    for name, (centre, first) in trios.items():
         for i in range(3):
-            submit(f"imt2023{prefix}{i}", route, centre + 5 * i, 10, 10)
+            submit(f"imt2023{first + i:03d}", route, centre + 5 * i, 10, 10)
     release()
 
     section("1. 'time doesn't work', widened: the window changes and no budget is spent")
-    g = group_of("imt2023w0")
-    code, body = respond("imt2023w0", g["group_id"], "decline", "TIME", {"b": 60, "a": 5})
-    r = mine("imt2023w0")["request"]
+    g = group_of("imt2023001")
+    code, body = respond("imt2023001", g["group_id"], "decline", "TIME", {"b": 60, "a": 5})
+    r = mine("imt2023001")["request"]
     check("group dissolved", code == 200 and body["state"] == "DISSOLVED", str(body))
     check("the window widened and never narrowed", (r["b"], r["a"]) == (60, 10), f"b={r['b']} a={r['a']}")
     check("no decline budget spent", r["decline_count"] == 0, str(r["decline_count"]))
     check("the declined time is remembered as an anchor",
           r["declined_anchors"] == [{"T": g["departure_time"], "size": 3}], str(r["declined_anchors"]))
     check("everyone is back in the pool",
-          all(mine(f"imt2023w{i}")["request"]["status"] == "PENDING" for i in range(3)))
+          all(mine(f"imt2023{1 + i:03d}")["request"]["status"] == "PENDING" for i in range(3)))
 
     section("2. 'too few people': only full cabs from now on")
-    g = group_of("imt2023y0")
-    respond("imt2023y0", g["group_id"], "decline", "TOO_FEW")
-    r = mine("imt2023y0")["request"]
+    g = group_of("imt2023021")
+    respond("imt2023021", g["group_id"], "decline", "TOO_FEW")
+    r = mine("imt2023021")["request"]
     check("min_group_size is now a full cab", r["min_group_size"] == CONFIG["max_group"])
     check("no budget spent for a real change", r["decline_count"] == 0)
 
     section("3. 'plans changed': the request is gone, the others are freed")
-    g = group_of("imt2023z0")
-    respond("imt2023z0", g["group_id"], "decline", "PLANS_CHANGED")
-    check("the request is withdrawn", mine("imt2023z0")["request"] is None)
+    g = group_of("imt2023031")
+    respond("imt2023031", g["group_id"], "decline", "PLANS_CHANGED")
+    check("the request is withdrawn", mine("imt2023031")["request"] is None)
     check("the other two are pending again",
-          all(mine(f"imt2023z{i}")["request"]["status"] == "PENDING" for i in (1, 2)))
+          all(mine(f"imt2023{31 + i:03d}")["request"]["status"] == "PENDING" for i in (1, 2)))
 
     section("4. the decline budget: two no-change declines, then a release sat out")
     same = {"b": 10, "a": 10}  # exactly their current window: nothing changes
     for n in (1, 2):
-        g = group_of("imt2023x0")
+        g = group_of("imt2023011")
         if g is None:
             release()
-            g = group_of("imt2023x0")
-        respond("imt2023x0", g["group_id"], "decline", "TIME", same)
-        check(f"decline {n} spent budget", mine("imt2023x0")["request"]["decline_count"] == n,
-              str(mine("imt2023x0")["request"]["decline_count"]))
+            g = group_of("imt2023011")
+        respond("imt2023011", g["group_id"], "decline", "TIME", same)
+        check(f"decline {n} spent budget", mine("imt2023011")["request"]["decline_count"] == n,
+              str(mine("imt2023011")["request"]["decline_count"]))
     out = release()
-    check("the student sits out this release", "imt2023x0" in out["STATION_COLLEGE"]["sat_out"],
+    check("the student sits out this release", "imt2023011" in out["STATION_COLLEGE"]["sat_out"],
           json.dumps(out["STATION_COLLEGE"]["sat_out"]))
-    check("and is in no group", all("imt2023x0" not in g["members"] for g in out["STATION_COLLEGE"]["groups"]))
-    check("status says SAT_OUT", mine("imt2023x0")["request"]["status"] == "SAT_OUT")
+    check("and is in no group", all("imt2023011" not in g["members"] for g in out["STATION_COLLEGE"]["groups"]))
+    check("status says SAT_OUT", mine("imt2023011")["request"]["status"] == "SAT_OUT")
     out = release()
     check("the next release revives them with a fresh budget",
-          "imt2023x0" in out["STATION_COLLEGE"]["revived"] and mine("imt2023x0")["request"]["decline_count"] == 0)
+          "imt2023011" in out["STATION_COLLEGE"]["revived"] and mine("imt2023011")["request"]["decline_count"] == 0)
 
 
 def timeout_sweep() -> None:
     section("5. silence past the deadline is a TIMEOUT decline")
     route = "AIRPORT_COLLEGE"
     for i in range(3):
-        submit(f"imt2023t{i}", route, 900 + 5 * i, 10, 10)
+        submit(f"imt2023{41 + i:03d}", route, 900 + 5 * i, 10, 10)
     release()
-    g = group_of("imt2023t0")
+    g = group_of("imt2023041")
     check("a group formed", g is not None and g["state"] == "FORMED")
-    respond("imt2023t0", g["group_id"], "accept")  # one accepts, two stay silent
+    respond("imt2023041", g["group_id"], "accept")  # one accepts, two stay silent
 
     out = sweep()
     check("nothing is swept before the deadline", not out["dissolved"], json.dumps(out))
@@ -191,10 +191,10 @@ def timeout_sweep() -> None:
     check("the stale group is dissolved", any(d["group_id"] == g["group_id"] for d in out["dissolved"]),
           json.dumps(out))
     check("only the silent two are penalised",
-          mine("imt2023t0")["request"]["decline_count"] == 0
-          and all(mine(f"imt2023t{i}")["request"]["decline_count"] == 1 for i in (1, 2)))
+          mine("imt2023041")["request"]["decline_count"] == 0
+          and all(mine(f"imt2023{41 + i:03d}")["request"]["decline_count"] == 1 for i in (1, 2)))
     check("everyone is back in the pool",
-          all(mine(f"imt2023t{i}")["request"]["status"] == "PENDING" for i in range(3)))
+          all(mine(f"imt2023{41 + i:03d}")["request"]["status"] == "PENDING" for i in range(3)))
 
 
 def advice_before_a_release() -> None:
@@ -278,7 +278,7 @@ def all_four_routes() -> None:
 
     for i, route in enumerate(ROUTES):
         for j in range(3):
-            submit(f"imt2024r{i}{j}", route, 1000 + 5 * j, 15, 15)
+            submit(f"imt2024{i * 10 + j + 1:03d}", route, 1000 + 5 * j, 15, 15)
     out = release()
     for route in ROUTES:
         check(f"{route} released", out[route]["status"] == "released", json.dumps(out[route])[:120])

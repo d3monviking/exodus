@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from cedar_authz import is_permitted
+from config import EMAIL_DOMAIN
 from handlers._common import identify, response
 from repo import get_repo
-
-EMAIL_DOMAIN = "iiitb.ac.in"
 
 
 def _proposal(group: dict, who: dict) -> dict:
@@ -17,21 +16,17 @@ def _proposal(group: dict, who: dict) -> dict:
         "departure_time": group["departure_time"],
         "accept_deadline": group.get("accept_deadline"),
         "size": len(members),
-        # members are anonymous until CONFIRMED; a decline can only name one by handle
-        "others": [str(i + 1) for i in range(len(members) - 1)],
         "my_response": (group.get("responses") or {}).get(who["id"]),
         "accepted": sum(1 for m in members if (group.get("responses") or {}).get(m) is True),
         "explanation": group.get("explanations", {}).get(who["id"]),
-        "contacts": None,
+        "others": [],
     }
-    resource = {
-        "type": "Group",
-        "id": group["group_id"],
-        "members": members,
-        "state": group["state"],
-    }
+    resource = {"type": "Group", "id": group["group_id"], "members": members, "state": group["state"]}
+    # Cedar decides whether this caller may see who else is in the cab. They can:
+    # naming someone in a "not with this person" decline needs a name.
     if is_permitted(who, "ViewContactDetails", resource):
-        proposal["contacts"] = [f"{m}@{EMAIL_DOMAIN}" for m in members if m != who["id"]]
+        proposal["others"] = [{"student_id": m, "email": f"{m}@{EMAIL_DOMAIN}"}
+                              for m in sorted(members) if m != who["id"]]
     return proposal
 
 
